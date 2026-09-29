@@ -1,12 +1,15 @@
-//! A read-only snapshot of a repository, built on a background thread with
-//! libgit2: refs, history with its graph layout, and working tree status.
+//! A read-only snapshot of a repository, built on a background thread:
+//! refs and history with its graph layout from libgit2, working tree status
+//! from `git status` (see `status`).
 
-use std::collections::HashMap;
+use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::cmp::Reverse;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
-use git2::{BranchType, Oid, Repository, RepositoryState, Sort, Status, StatusOptions};
+use git2::{BranchType, Oid, Repository, RepositoryState};
 use gpui::SharedString;
 use smallvec::SmallVec;
 
@@ -114,6 +117,11 @@ pub struct History {
     tips: Vec<Oid>,
     pub commits: Vec<Commit>,
     pub truncated: bool,
+    /// Tag ref target → the commit it peels to. Keys are content hashes, so
+    /// entries never go stale; peeling ~1000 tags each reload costs ~0.5 s.
+    peeled: HashMap<Oid, Oid>,
+    /// Graph layouts without and with the `// WIP` row, made on first use.
+    layouts: [OnceLock<(Arc<Vec<GraphRow>>, u16)>; 2],
 }
 
 pub struct Snapshot {
@@ -128,14 +136,14 @@ pub struct Snapshot {
     pub tags: Vec<(SharedString, Oid)>,
     pub stashes: Vec<Stash>,
     pub commits: Vec<Commit>,
-    pub graph: Vec<GraphRow>,
+    pub graph: Arc<Vec<GraphRow>>,
     pub graph_width: u16,
     pub refs: HashMap<Oid, Vec<RefLabel>>,
     pub index_of: HashMap<Oid, usize>,
     pub status: WorkStatus,
     pub truncated: bool,
     pub load_time: Duration,
-    pub history: std::sync::Arc<History>,
+    pub history: Arc<History>,
 }
 
 /// Oid used for the "uncommitted changes" pseudo-commit at the top.
@@ -152,61 +160,78 @@ pub fn discover(path: &Path) -> Result<PathBuf> {
         .context("bare repositories are not supported")
 }
 
-pub fn status(repo: &Repository) -> Result<WorkStatus> {
-    let mut o = StatusOptions::new();
-    o.include_untracked(true)
-        .recurse_untracked_dirs(true)
-        .renames_head_to_index(true)
-        .exclude_submodules(true);
-    let statuses = repo.statuses(Some(&mut o))?;
+/// Working tree status from `git status`, which checks files on several
+/// threads (and uses fsmonitor or the untracked cache when configured):
+/// ~4× faster than libgit2 on the Linux kernel's 96k files.
+pub fn status(workdir: &Path) -> Result<WorkStatus> {
+    let out = std::process::Command::new("git")
+        .current_dir(workdir)
+        // Never refresh the index as a side effect: that would take its
+        // lock under the user's feet and wake our own file watcher.
+        .args(["--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignore-submodules=all"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .context("could not run git")?;
+    if !out.status.success() {
+        anyhow::bail!("git status failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    Ok(parse_status(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// Parses `git status --porcelain=v2 -z`.
+pub fn parse_status(out: &str) -> WorkStatus {
     let mut ws = WorkStatus::default();
-    for e in statuses.iter() {
-        let s = e.status();
-        let path: SharedString = e.path().unwrap_or("").to_string().into();
-        if s.is_conflicted() {
-            ws.conflicted.push(StatusEntry { path, status: FileStatus::Conflicted });
-            continue;
-        }
-        let staged = if s.contains(Status::INDEX_NEW) {
-            Some(FileStatus::Added)
-        } else if s.contains(Status::INDEX_DELETED) {
-            Some(FileStatus::Deleted)
-        } else if s.contains(Status::INDEX_RENAMED) {
-            Some(FileStatus::Renamed)
-        } else if s.contains(Status::INDEX_TYPECHANGE) {
-            Some(FileStatus::TypeChange)
-        } else if s.contains(Status::INDEX_MODIFIED) {
-            Some(FileStatus::Modified)
-        } else {
-            None
+    let mut records = out.split('\0');
+    while let Some(rec) = records.next() {
+        let entry = |path: &str, status| StatusEntry { path: path.to_string().into(), status };
+        let (xy, path) = match rec.as_bytes().first() {
+            Some(b'?') => {
+                ws.unstaged.push(entry(&rec[2..], FileStatus::Untracked));
+                continue;
+            }
+            Some(b'u') => {
+                if let Some(path) = rec.splitn(11, ' ').nth(10) {
+                    ws.conflicted.push(entry(path, FileStatus::Conflicted));
+                }
+                continue;
+            }
+            Some(b'1') => match rec.splitn(9, ' ').collect::<Vec<_>>()[..] {
+                [_, xy, .., path] => (xy, path),
+                _ => continue,
+            },
+            Some(b'2') => {
+                records.next(); // the original path of a rename
+                match rec.splitn(10, ' ').collect::<Vec<_>>()[..] {
+                    [_, xy, .., path] => (xy, path),
+                    _ => continue,
+                }
+            }
+            _ => continue,
         };
-        let unstaged = if s.contains(Status::WT_NEW) {
-            Some(FileStatus::Untracked)
-        } else if s.contains(Status::WT_DELETED) {
-            Some(FileStatus::Deleted)
-        } else if s.contains(Status::WT_RENAMED) {
-            Some(FileStatus::Renamed)
-        } else if s.contains(Status::WT_TYPECHANGE) {
-            Some(FileStatus::TypeChange)
-        } else if s.contains(Status::WT_MODIFIED) {
-            Some(FileStatus::Modified)
-        } else {
-            None
+        let [x, y] = xy.as_bytes()[..] else { continue };
+        let staged = match x {
+            b'A' | b'C' => Some(FileStatus::Added),
+            b'D' => Some(FileStatus::Deleted),
+            b'R' => Some(FileStatus::Renamed),
+            b'T' => Some(FileStatus::TypeChange),
+            b'M' => Some(FileStatus::Modified),
+            _ => None,
         };
+        let unstaged = match y {
+            b'D' => Some(FileStatus::Deleted),
+            b'T' => Some(FileStatus::TypeChange),
+            b'M' => Some(FileStatus::Modified),
+            _ => None,
+        };
+        // A staged rename is listed under its new path.
         if let Some(st) = staged {
-            // A staged rename is shown under its new path.
-            let p = e
-                .head_to_index()
-                .and_then(|d| d.new_file().path().map(|p| p.to_string_lossy().into_owned()))
-                .map(SharedString::from)
-                .unwrap_or_else(|| path.clone());
-            ws.staged.push(StatusEntry { path: p, status: st });
+            ws.staged.push(entry(path, st));
         }
         if let Some(st) = unstaged {
-            ws.unstaged.push(StatusEntry { path, status: st });
+            ws.unstaged.push(entry(path, st));
         }
     }
-    Ok(ws)
+    ws
 }
 
 fn op_state(repo: &Repository) -> OpState {
@@ -292,11 +317,16 @@ pub fn summary(workdir: &Path) -> Result<Summary> {
             repo.graph_ahead_behind(local, up).ok()
         })
         .unwrap_or((0, 0));
-    Ok(Summary { changes: status(&repo)?.changes(), state: op_state(&repo), head, ahead, behind })
+    Ok(Summary { changes: status(workdir)?.changes(), state: op_state(&repo), head, ahead, behind })
 }
 
-pub fn load(workdir: &Path, prev: Option<std::sync::Arc<History>>) -> Result<Snapshot> {
+pub fn load(workdir: &Path, prev: Option<Arc<History>>) -> Result<Snapshot> {
     let start = Instant::now();
+    // Status runs in git while we read refs and walk history.
+    let status = std::thread::spawn({
+        let dir = workdir.to_path_buf();
+        move || status(&dir)
+    });
     let repo = Repository::open(workdir)?;
     let name: SharedString = workdir
         .file_name()
@@ -353,13 +383,16 @@ pub fn load(workdir: &Path, prev: Option<std::sync::Arc<History>>) -> Result<Sna
     remotes.sort_by(|a, b| a.name.cmp(&b.name));
 
     let mut tags = Vec::new();
+    let mut peeled = HashMap::new();
     repo.tag_foreach(|oid, name| {
         let name = String::from_utf8_lossy(name).trim_start_matches("refs/tags/").to_string();
-        let target = repo
-            .find_object(oid, None)
-            .and_then(|o| o.peel_to_commit())
-            .map(|c| c.id())
-            .unwrap_or(oid);
+        let target = prev.as_ref().and_then(|h| h.peeled.get(&oid).copied()).unwrap_or_else(|| {
+            repo.find_object(oid, None)
+                .and_then(|o| o.peel_to_commit())
+                .map(|c| c.id())
+                .unwrap_or(oid)
+        });
+        peeled.insert(oid, target);
         tags.push((SharedString::from(name), target));
         true
     })?;
@@ -394,7 +427,6 @@ pub fn load(workdir: &Path, prev: Option<std::sync::Arc<History>>) -> Result<Sna
         });
     }
 
-    let status = status(&repo)?;
     let state = op_state(&repo);
     let rebase_progress = (state == OpState::Rebase).then(|| rebase_progress(&repo)).flatten();
 
@@ -406,8 +438,9 @@ pub fn load(workdir: &Path, prev: Option<std::sync::Arc<History>>) -> Result<Sna
     tips.dedup();
     let history = match prev.filter(|h| h.tips == tips) {
         Some(h) => h,
-        None => std::sync::Arc::new(walk_history(&repo, head.oid, tips)?),
+        None => Arc::new(walk_history(&repo, tips, peeled)?),
     };
+    let status = status.join().map_err(|_| anyhow::anyhow!("git status panicked"))??;
 
     let mut commits = Vec::with_capacity(history.commits.len() + 1);
     let dirty = !status.is_clean();
@@ -425,7 +458,14 @@ pub fn load(workdir: &Path, prev: Option<std::sync::Arc<History>>) -> Result<Sna
     }
     commits.extend(history.commits.iter().cloned());
     let truncated = history.truncated;
-    let layout = graph::layout(commits.iter().map(|c| (c.oid, c.parents.as_slice())));
+    // The WIP row's only parent is HEAD, which is one of the tips, so the
+    // layout depends on nothing but the history and whether the row is there.
+    let (graph, graph_width) = history.layouts[dirty as usize]
+        .get_or_init(|| {
+            let l = graph::layout(commits.iter().map(|c| (c.oid, c.parents.as_slice())));
+            (Arc::new(l.rows), l.width)
+        })
+        .clone();
     let index_of = commits.iter().enumerate().map(|(i, c)| (c.oid, i)).collect();
 
     Ok(Snapshot {
@@ -439,8 +479,8 @@ pub fn load(workdir: &Path, prev: Option<std::sync::Arc<History>>) -> Result<Sna
         tags,
         stashes,
         commits,
-        graph: layout.rows,
-        graph_width: layout.width,
+        graph,
+        graph_width,
         refs,
         index_of,
         status,
@@ -450,38 +490,83 @@ pub fn load(workdir: &Path, prev: Option<std::sync::Arc<History>>) -> Result<Sna
     })
 }
 
-fn walk_history(repo: &Repository, head: Option<Oid>, tips: Vec<Oid>) -> Result<History> {
-    let mut walk = repo.revwalk()?;
-    walk.set_sorting(Sort::TOPOLOGICAL | Sort::TIME)?;
-    // HEAD first so its line gets the leftmost lane.
-    if let Some(oid) = head {
-        walk.push(oid)?;
-    }
-    for t in &tips {
-        let _ = walk.push(*t);
-    }
-    let mut commits = Vec::with_capacity(1024);
-    let mut truncated = false;
-    for oid in walk {
-        let oid = oid?;
-        if commits.len() >= MAX_COMMITS {
-            truncated = true;
-            break;
+/// The newest `MAX_COMMITS` commits reachable from `tips`, children before
+/// parents, otherwise newest first (like `git log --date-order`).
+///
+/// libgit2's sorted walks visit every commit before returning the first
+/// (20 s on the Linux kernel without a commit-graph), so this walks newest
+/// first from a queue and stops at the limit, as git does, then fixes up
+/// any child that clock skew put below its parent.
+fn walk_history(repo: &Repository, tips: Vec<Oid>, peeled: HashMap<Oid, Oid>) -> Result<History> {
+    let mut queue = BinaryHeap::new();
+    let mut found: HashMap<Oid, Commit> = HashMap::new();
+    let mut seen = HashSet::new();
+    let mut seq = 0u64;
+    let mut enqueue = |oid: Oid, queue: &mut BinaryHeap<(i64, Reverse<u64>, Oid)>, found: &mut HashMap<Oid, Commit>| {
+        if !seen.insert(oid) {
+            return;
         }
-        let c = repo.find_commit(oid)?;
+        let Ok(c) = repo.find_commit(oid) else { return };
         let author = c.author();
-        let short = oid.to_string()[..7].to_string();
-        commits.push(Commit {
+        let time = c.time().seconds();
+        found.insert(oid, Commit {
             oid,
-            short: short.into(),
+            short: oid.to_string()[..7].to_string().into(),
             summary: c.summary_bytes().map(|s| String::from_utf8_lossy(s).into_owned()).unwrap_or_default().into(),
             author: author.name().unwrap_or("").to_string().into(),
             email: author.email().unwrap_or("").to_string().into(),
-            time: c.time().seconds(),
+            time,
             parents: c.parent_ids().collect(),
         });
+        // Ties keep the order commits were found in.
+        queue.push((time, Reverse(seq), oid));
+        seq += 1;
+    };
+    for t in &tips {
+        enqueue(*t, &mut queue, &mut found);
     }
-    Ok(History { tips, commits, truncated })
+    let mut commits = Vec::with_capacity(1024);
+    while let Some((_, _, oid)) = queue.pop() {
+        if commits.len() >= MAX_COMMITS {
+            break;
+        }
+        let c = found.remove(&oid).unwrap();
+        for p in &c.parents {
+            enqueue(*p, &mut queue, &mut found);
+        }
+        commits.push(c);
+    }
+    let truncated = !queue.is_empty();
+    Ok(History { tips, commits: children_first(commits), truncated, peeled, layouts: Default::default() })
+}
+
+/// Reorders `commits` (newest first) so every commit comes after all of its
+/// children, keeping the order otherwise.
+fn children_first(commits: Vec<Commit>) -> Vec<Commit> {
+    let index: HashMap<Oid, usize> = commits.iter().enumerate().map(|(i, c)| (c.oid, i)).collect();
+    let mut children = vec![0u32; commits.len()];
+    for c in &commits {
+        for p in &c.parents {
+            if let Some(&j) = index.get(p) {
+                children[j] += 1;
+            }
+        }
+    }
+    let mut ready: BinaryHeap<Reverse<usize>> = (0..commits.len()).filter(|&i| children[i] == 0).map(Reverse).collect();
+    let mut order = Vec::with_capacity(commits.len());
+    while let Some(Reverse(i)) = ready.pop() {
+        order.push(i);
+        for p in &commits[i].parents {
+            if let Some(&j) = index.get(p) {
+                children[j] -= 1;
+                if children[j] == 0 {
+                    ready.push(Reverse(j));
+                }
+            }
+        }
+    }
+    let mut slots: Vec<Option<Commit>> = commits.into_iter().map(Some).collect();
+    order.into_iter().map(|i| slots[i].take().unwrap()).collect()
 }
 
 /// Details for the commit panel.

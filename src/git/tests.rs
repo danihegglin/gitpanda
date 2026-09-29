@@ -206,3 +206,45 @@ fn rename_branch_and_detect_file_rename() {
     assert_eq!(d.files[0].path, "new.txt");
     assert_eq!(d.files[0].old_path.as_deref(), Some("old.txt"));
 }
+
+#[test]
+fn status_lists_staged_unstaged_untracked_and_renames() {
+    let r = TempRepo::new();
+    r.commit("a.txt", "1\n", "first");
+    r.commit("old name.txt", "x\n", "second");
+    r.write("a.txt", "2\n");
+    r.git(&["add", "a.txt"]);
+    r.write("a.txt", "3\n");
+    r.git(&["mv", "old name.txt", "new name.txt"]);
+    std::fs::create_dir(r.0.join("dir")).unwrap();
+    r.write("dir/u.txt", "u\n");
+    let s = repo::status(&r.0).unwrap();
+    let names = |v: &[repo::StatusEntry]| v.iter().map(|e| e.path.to_string()).collect::<Vec<_>>();
+    assert_eq!(names(&s.staged), ["a.txt", "new name.txt"]);
+    assert_eq!(s.staged[1].status, super::diff::FileStatus::Renamed);
+    assert_eq!(names(&s.unstaged), ["a.txt", "dir/u.txt"]);
+    assert_eq!(s.unstaged[1].status, super::diff::FileStatus::Untracked);
+    // Reading status must not rewrite the index (that would wake the watcher).
+    let index = std::fs::metadata(r.0.join(".git/index")).unwrap().modified().unwrap();
+    repo::status(&r.0).unwrap();
+    assert_eq!(std::fs::metadata(r.0.join(".git/index")).unwrap().modified().unwrap(), index);
+}
+
+#[test]
+fn history_keeps_children_above_parents_despite_clock_skew() {
+    let r = TempRepo::new();
+    r.commit("a.txt", "1\n", "base");
+    // A parent committed "in the future", then a child with a sane clock.
+    let env = |t: &str| [("GIT_COMMITTER_DATE", t.to_string()), ("GIT_AUTHOR_DATE", t.to_string())];
+    r.write("a.txt", "2\n");
+    r.git(&["add", "a.txt"]);
+    Git::new(&r.0).run_env(&["commit", "-q", "-m", "skewed parent"], &env("2099-01-01T00:00:00").each_ref().map(|(k, v)| (*k, v.as_str()))).unwrap();
+    // A branch at the parent makes the walk start from it too.
+    r.git(&["branch", "keep"]);
+    r.write("a.txt", "3\n");
+    r.git(&["add", "a.txt"]);
+    Git::new(&r.0).run_env(&["commit", "-q", "-m", "child"], &env("2020-01-01T00:00:00").each_ref().map(|(k, v)| (*k, v.as_str()))).unwrap();
+    let s = repo::load(&r.0, None).unwrap();
+    let order: Vec<_> = s.commits.iter().map(|c| c.summary.to_string()).collect();
+    assert_eq!(order, ["child", "skewed parent", "base"]);
+}

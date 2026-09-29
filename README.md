@@ -150,16 +150,27 @@ everything else.
 
 ## 🚀 Why it's fast
 
-- **The UI thread never touches the repository.** Reads use libgit2 on a
+- **The UI thread never touches the repository.** Reads happen on a
   background thread and arrive as immutable snapshots.
-- **History is walked once.** The walked history is cached and reused until a
-  ref moves, so the common reload (after an edit or a stage) only re-reads
-  refs and status.
-- **Everything is virtualized.** Every list is a `uniform_list`, so the graph
-  costs the same with 50 commits or 50,000.
+- **History streams.** Commits are walked newest first and the walk stops at
+  50,000, like `git log --date-order`, then any child that clock skew put
+  below its parent is moved back up. (libgit2's sorted walks read *all* of
+  history before the first commit: 20 s on the Linux kernel.)
+- **Nothing is done twice.** The walked history, its graph layout and every
+  tag's target are cached until a ref moves, so the common reload (after an
+  edit or a stage) only re-reads refs and status.
+- **Status comes from `git status`**, which checks files on several threads
+  and uses fsmonitor or the untracked cache if you've turned them on. It
+  runs while history loads.
+- **Everything is virtualized.** Every list is a `uniform_list`: only the
+  rows on screen are ever built.
 
-On ripgrep's history (2.3k commits, 289 refs) a cold load takes ~40 ms and a
-warm reload ~7.5 ms. Measure your own repository with:
+| | commits | refs | cold load | reload |
+|---|---|---|---|---|
+| Linux kernel (96k files) | 1.48M (50k shown) | 950 | 0.74 s | 0.27 s |
+| ripgrep | 2.3k | 289 | ~40 ms | ~7.5 ms |
+
+Measure your own repository with:
 
 ```sh
 cargo run --release -- --bench /path/to/repo
@@ -173,7 +184,7 @@ cargo run --release -- --bench /path/to/repo
   `conflict.rs` parses and resolves conflict markers, and `ops.rs` runs every
   mutation through the `git` CLI, so hooks, config and credentials behave
   exactly like your own git (interactive rebase is scripted through
-  `GIT_SEQUENCE_EDITOR`).
+  `GIT_SEQUENCE_EDITOR`). Reads use libgit2, except status.
 - `src/ui/`: one root view (`app.rs`) owns all state; each region renders
   from its own module, and `projects.rs` draws the project bar.
 - `src/workspace.rs`: projects and the file they're saved in.
