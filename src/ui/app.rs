@@ -1,7 +1,7 @@
 //! The root view: repository state, background loading, operations and
 //! keyboard handling. Rendering of each region lives in sibling modules.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -19,7 +19,8 @@ use notify::{RecursiveMode, Watcher};
 use crate::git::conflict::{ConflictFile, Pick};
 use crate::git::diff::{DiffSource, FileDiff, FileStatus, file_diff};
 use crate::git::ops::{Git, RebaseAction, RebaseStep, rebase_range};
-use crate::git::repo::{self, CommitDetail, Snapshot, wip_oid};
+use crate::git::repo::{self, CommitDetail, Snapshot, Summary, wip_oid};
+use crate::workspace::Workspace;
 
 use super::text_input::TextInput;
 use super::theme::*;
@@ -221,6 +222,13 @@ pub struct GitPanda {
     pub diff_scroll: UniformListScrollHandle,
     pub files_scroll: UniformListScrollHandle,
 
+    pub workspace: Workspace,
+    /// Project bar summaries, by repository; `Err` when it can't be read.
+    pub summaries: HashMap<PathBuf, Result<Summary, SharedString>>,
+    pub(super) summary_gen: u64,
+    /// Unsent commit messages of repositories switched away from.
+    drafts: HashMap<PathBuf, String>,
+
     watcher: Option<notify::RecommendedWatcher>,
     fs_dirty: Arc<AtomicBool>,
     _poll: Task<()>,
@@ -243,6 +251,7 @@ impl GitPanda {
         cx.observe_window_activation(window, |this, window, cx| {
             if window.is_window_active() {
                 this.reload(cx);
+                this.refresh_summaries(cx);
             }
         })
         .detach();
@@ -272,12 +281,25 @@ impl GitPanda {
             graph_scroll: UniformListScrollHandle::new(),
             diff_scroll: UniformListScrollHandle::new(),
             files_scroll: UniformListScrollHandle::new(),
+            workspace: Workspace::load(),
+            summaries: HashMap::new(),
+            summary_gen: 0,
+            drafts: HashMap::new(),
             watcher: None,
             fs_dirty,
             _poll: poll,
         };
-        let start = path.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-        this.open_repo(&start, cx);
+        // An explicit path, else the repository we're in, else where the
+        // active project was left.
+        let cwd = std::env::current_dir().unwrap_or_default();
+        match path {
+            Some(p) => this.open_repo(&p, cx),
+            None if repo::discover(&cwd).is_ok() => this.open_repo(&cwd, cx),
+            None => match this.workspace.project().and_then(|p| p.start()).cloned() {
+                Some(p) => this.open_repo(&p, cx),
+                None => this.refresh_summaries(cx),
+            },
+        }
         this
     }
 
@@ -286,16 +308,23 @@ impl GitPanda {
     pub fn open_repo(&mut self, path: &Path, cx: &mut Context<Self>) {
         match repo::discover(path) {
             Ok(dir) => {
+                let project = self.workspace.active;
+                self.workspace.opened(&dir);
+                self.save_workspace(cx);
+                if self.workdir.as_ref() == Some(&dir) {
+                    return self.reload(cx);
+                }
+                self.close_repo(cx);
+                if let Some(draft) = self.drafts.remove(&dir) {
+                    self.commit_input.update(cx, |i, cx| i.set_text(draft, cx));
+                }
                 self.workdir = Some(dir.clone());
                 self.open_error = None;
-                self.snap = None;
-                self.selected = None;
-                self.range = None;
-                self.detail = None;
-                self.file_view = None;
-                self.conflict = None;
                 self.watch(&dir);
                 self.reload(cx);
+                if project != self.workspace.active || !self.summaries.contains_key(&dir) {
+                    self.refresh_summaries(cx);
+                }
             }
             Err(e) => {
                 if self.workdir.is_some() {
@@ -305,6 +334,34 @@ impl GitPanda {
                 }
             }
         }
+        cx.notify();
+    }
+
+    /// Closes the open repository, keeping its unsent commit message.
+    pub fn close_repo(&mut self, cx: &mut Context<Self>) {
+        if let Some(old) = self.workdir.take() {
+            let draft = self.commit_input.read(cx).text().to_string();
+            if !draft.trim().is_empty() {
+                self.drafts.insert(old, draft);
+            }
+            self.commit_input.update(cx, |i, cx| i.set_text("", cx));
+        }
+        // Results still in flight belong to the old repository.
+        self.load_gen += 1;
+        self.detail_gen += 1;
+        self.file_gen += 1;
+        self.loading = false;
+        self.reload_queued = false;
+        self.watcher = None;
+        self.snap = None;
+        self.selected = None;
+        self.range = None;
+        self.detail = None;
+        self.file_view = None;
+        self.conflict = None;
+        self.amend = false;
+        self.menu = None;
+        self.modal = None;
         cx.notify();
     }
 
@@ -401,6 +458,7 @@ impl GitPanda {
         }
         let changed = selected != self.selected;
         self.selected = selected;
+        self.summaries.insert(snap.workdir.clone(), Ok(Summary::of(&snap)));
         self.snap = Some(snap);
         if first {
             if let Some(i) = self.selected_index() {
@@ -1141,6 +1199,12 @@ impl GitPanda {
                 self.toast(ToastKind::Info, "Refreshed", cx);
             }
             "o" if cmd => self.prompt_open(cx),
+            "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" if cmd => {
+                let i = key.parse::<usize>().unwrap() - 1;
+                if let Some(p) = self.workspace.project().and_then(|p| p.repos.get(i)).cloned() {
+                    self.open_repo(&p, cx);
+                }
+            }
             "b" if cmd => {
                 let at = self.selected.filter(|o| *o != wip_oid()).map_or("HEAD".to_string(), |o| o.to_string());
                 self.new_branch_at(at, window, cx);
@@ -1225,19 +1289,27 @@ impl GitPanda {
 
 impl Render for GitPanda {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let project = self.workspace.project().map(|p| format!(" · {}", p.name)).unwrap_or_default();
         let title = match &self.snap {
-            Some(s) => format!("{} — gitpanda", s.name),
-            None => "gitpanda".into(),
+            Some(s) => format!("{}{project} — gitpanda", s.name),
+            None => format!("gitpanda{project}"),
         };
         window.set_window_title(&title);
 
         let body = if self.workdir.is_none() {
-            self.render_welcome(cx).into_any_element()
+            div()
+                .flex()
+                .flex_col()
+                .size_full()
+                .when(!self.workspace.projects.is_empty(), |d| d.child(self.render_project_bar(cx)))
+                .child(div().flex_1().min_h_0().child(self.render_welcome(cx)))
+                .into_any_element()
         } else {
             div()
                 .flex()
                 .flex_col()
                 .size_full()
+                .child(self.render_project_bar(cx))
                 .child(self.render_toolbar(cx))
                 .children(self.render_banner(cx))
                 .child(
@@ -1326,6 +1398,16 @@ impl GitPanda {
                 window.focus(&self.commit_input.read(cx).focus);
             }
             "toast" => self.toast(ToastKind::Success, args.join(" "), cx),
+            "repo" => {
+                if let Some(p) = self.workspace.project().and_then(|p| p.repos.get(num(0))).cloned() {
+                    self.open_repo(&p, cx);
+                }
+            }
+            "project" => self.switch_project(num(0), cx),
+            "project-menu" => {
+                let items = self.project_menu();
+                self.menu = Some(Menu { pos: gpui::point(px(80.), px(38.)), items });
+            }
             _ => eprintln!("gitpanda: unknown call {name:?}"),
         }
         cx.notify();

@@ -146,8 +146,9 @@ pub fn wip_oid() -> Oid {
 pub fn discover(path: &Path) -> Result<PathBuf> {
     let repo = Repository::discover(path)
         .with_context(|| format!("{} is not inside a git repository", path.display()))?;
+    // Without the trailing slash libgit2 adds, so paths compare and print cleanly.
     repo.workdir()
-        .map(Path::to_path_buf)
+        .map(|p| p.components().collect())
         .context("bare repositories are not supported")
 }
 
@@ -239,6 +240,61 @@ fn rebase_progress(repo: &Repository) -> Option<(usize, usize)> {
     None
 }
 
+fn read_head(repo: &Repository) -> Head {
+    let Ok(head_ref) = repo.head() else {
+        // An unborn branch still has a name worth showing.
+        let unborn = repo
+            .find_reference("HEAD")
+            .ok()
+            .and_then(|r| r.symbolic_target().map(|t| t.trim_start_matches("refs/heads/").to_string()));
+        return Head { branch: unborn.map(Into::into), oid: None };
+    };
+    Head {
+        branch: head_ref.is_branch().then(|| head_ref.shorthand().map(|s| s.to_string().into())).flatten(),
+        oid: head_ref.target(),
+    }
+}
+
+/// A glance at a repository for the project bar, without its history.
+#[derive(Clone, Debug)]
+pub struct Summary {
+    pub head: Head,
+    pub ahead: usize,
+    pub behind: usize,
+    /// Changed files, counted like the `// WIP` row.
+    pub changes: usize,
+    pub state: OpState,
+}
+
+impl WorkStatus {
+    pub fn changes(&self) -> usize {
+        self.staged.len() + self.unstaged.len() + self.conflicted.len()
+    }
+}
+
+impl Summary {
+    pub fn of(snap: &Snapshot) -> Self {
+        let (ahead, behind) = snap.branches.iter().find(|b| b.is_head).map_or((0, 0), |b| (b.ahead, b.behind));
+        Summary { head: snap.head.clone(), ahead, behind, changes: snap.status.changes(), state: snap.state }
+    }
+}
+
+pub fn summary(workdir: &Path) -> Result<Summary> {
+    let repo = Repository::open(workdir)?;
+    let head = read_head(&repo);
+    let (ahead, behind) = head
+        .branch
+        .as_ref()
+        .and_then(|b| repo.find_branch(b, BranchType::Local).ok())
+        .and_then(|b| {
+            let local = b.get().target()?;
+            let up = b.upstream().ok()?.get().target()?;
+            repo.graph_ahead_behind(local, up).ok()
+        })
+        .unwrap_or((0, 0));
+    Ok(Summary { changes: status(&repo)?.changes(), state: op_state(&repo), head, ahead, behind })
+}
+
 pub fn load(workdir: &Path, prev: Option<std::sync::Arc<History>>) -> Result<Snapshot> {
     let start = Instant::now();
     let repo = Repository::open(workdir)?;
@@ -248,24 +304,7 @@ pub fn load(workdir: &Path, prev: Option<std::sync::Arc<History>>) -> Result<Sna
         .unwrap_or_default()
         .into();
 
-    let head_ref = repo.head().ok();
-    let head = Head {
-        branch: head_ref
-            .as_ref()
-            .filter(|h| h.is_branch())
-            .and_then(|h| h.shorthand().map(|s| s.to_string().into())),
-        oid: head_ref.as_ref().and_then(|h| h.target()),
-    };
-    // An unborn branch still has a name worth showing.
-    let head = if head_ref.is_none() {
-        let unborn = repo
-            .find_reference("HEAD")
-            .ok()
-            .and_then(|r| r.symbolic_target().map(|t| t.trim_start_matches("refs/heads/").to_string()));
-        Head { branch: unborn.map(Into::into), oid: None }
-    } else {
-        head
-    };
+    let head = read_head(&repo);
 
     let mut refs: HashMap<Oid, Vec<RefLabel>> = HashMap::new();
     let mut branches = Vec::new();
@@ -373,7 +412,7 @@ pub fn load(workdir: &Path, prev: Option<std::sync::Arc<History>>) -> Result<Sna
     let mut commits = Vec::with_capacity(history.commits.len() + 1);
     let dirty = !status.is_clean();
     if dirty {
-        let n = status.staged.len() + status.unstaged.len() + status.conflicted.len();
+        let n = status.changes();
         commits.push(Commit {
             oid: wip_oid(),
             short: "".into(),

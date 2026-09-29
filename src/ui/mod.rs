@@ -3,6 +3,7 @@ mod chrome;
 mod diff_view;
 mod graph_view;
 mod panel;
+mod projects;
 mod sidebar;
 pub mod text_input;
 pub mod theme;

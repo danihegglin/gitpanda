@@ -31,7 +31,7 @@ fn tool(id: &'static str, glyph: &'static str, label: &'static str) -> gpui::Sta
 }
 
 /// Empty toolbar space that drags the window (the titlebar is transparent).
-fn drag_space() -> gpui::Div {
+pub(super) fn drag_space() -> gpui::Div {
     div().flex_1().h_full().on_mouse_down(gpui::MouseButton::Left, |ev, window, _| {
         if ev.click_count == 2 {
             window.zoom_window();
@@ -65,8 +65,7 @@ impl GitPanda {
             .items_center()
             .gap(px(4.))
             .h(px(54.))
-            .pl(px(78.)) // clear the macOS traffic lights
-            .pr(px(14.))
+            .px(px(14.))
             .bg(c(BG_DARK))
             .border_b_1()
             .border_color(c(BORDER))
@@ -235,6 +234,12 @@ impl GitPanda {
     }
 
     pub fn render_welcome(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        // An empty project asks for repositories rather than a single one.
+        let empty = self.workspace.project().filter(|p| p.repos.is_empty()).map(|p| p.name.clone());
+        let subtitle = match &empty {
+            Some(name) => format!("{name} has no repositories yet"),
+            None => "A fast, friendly git client".into(),
+        };
         div()
             .flex()
             .size_full()
@@ -249,16 +254,22 @@ impl GitPanda {
                     .gap(px(14.))
                     .child(logo(72.))
                     .child(div().text_size(px(28.)).font_weight(gpui::FontWeight::BOLD).child("gitpanda"))
-                    .child(div().text_color(c(COMMENT)).child("A fast, friendly git client"))
+                    .child(div().text_color(c(COMMENT)).child(subtitle))
                     .children(self.open_error.clone().map(|e| {
                         div().max_w(px(460.)).px(px(12.)).py(px(8.)).rounded(px(6.)).bg(alpha(RED, 0.1)).text_color(c(RED)).text_size(px(12.)).child(e)
                     }))
                     .child(
-                        button("open", "Open repository…  ⌘O", Tone::Primary)
+                        button("open", if empty.is_some() { "Add repositories…" } else { "Open repository…  ⌘O" }, Tone::Primary)
                             .h(px(36.))
                             .px(px(18.))
                             .text_size(px(13.))
-                            .on_click(cx.listener(|this, _, _, cx| this.prompt_open(cx))),
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if empty.is_some() {
+                                    this.prompt_add_repos(cx)
+                                } else {
+                                    this.prompt_open(cx)
+                                }
+                            })),
                     ),
             )
             .into_any_element()

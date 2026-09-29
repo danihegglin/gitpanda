@@ -1,6 +1,7 @@
 mod debug;
 mod git;
 mod ui;
+mod workspace;
 
 use std::path::PathBuf;
 
@@ -32,7 +33,7 @@ fn main() {
                 titlebar: Some(TitlebarOptions {
                     title: Some("gitpanda".into()),
                     appears_transparent: true,
-                    traffic_light_position: Some(point(px(16.), px(20.))),
+                    traffic_light_position: Some(point(px(16.), px(13.))),
                 }),
                 window_min_size: Some(size(px(960.), px(560.))),
                 ..Default::default()

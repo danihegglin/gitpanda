@@ -34,6 +34,13 @@ cargo run --release -- /path/to/repo     # or run inside a repo
   Files can also be renamed (`git mv`) from the file menu.
 - Cherry-pick, revert, reset (soft / mixed / hard), tags, stashes (push,
   pop, apply, drop), commit details with parents and changed files.
+- **Projects**: group related repositories into a project. The bar at
+  the top has a tab per repository showing its branch, uncommitted changes,
+  ahead/behind and any merge or rebase in progress, plus a project-wide
+  tally. One repository is open at a time: click a tab or press ⌘1–⌘9 to
+  switch (unsent commit messages are kept per repository). Opening a
+  repository adds it to the active project. Projects are saved in
+  `~/.config/gitpanda/projects`, or wherever `GITPANDA_PROJECTS` points.
 - Live refresh: file-system watcher (ignores gitignored paths) plus refresh
   on window focus.
 
@@ -51,6 +58,7 @@ cargo run --release -- /path/to/repo     # or run inside a repo
 | ⌘⌫ | drop selected commit(s) |
 | ⌘R | refresh |
 | ⌘O | open repository |
+| ⌘1–⌘9 | switch to the project's nth repository |
 | ⌘C | copy selected commit SHA |
 | esc | close diff / dialog / menu |
 | rebase editor | p r s f d set action, ⌥↑↓ reorder, ⏎ start |
