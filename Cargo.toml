@@ -1,0 +1,38 @@
+[package]
+name = "gitpanda"
+version = "0.1.0"
+edition = "2024"
+description = "A fast, good-looking git client built on gpui"
+
+[dependencies]
+gpui = "0.2.2"
+git2 = { version = "0.20", default-features = false }
+notify = "8.2"
+smallvec = "1.16"
+anyhow = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[features]
+# Compile gpui's Metal shaders at startup, so building doesn't need Xcode's
+# Metal toolchain. Build with --no-default-features to precompile them.
+default = ["runtime-shaders"]
+runtime-shaders = ["gpui/runtime_shaders"]
+
+# Used only by the GITPANDA_SCRIPT self-screenshot hook; gpui already builds them.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"
+core-graphics = "0.24"
+raw-window-handle = "0.6"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[lints.rust]
+# objc's msg_send! checks a `cargo-clippy` feature.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
