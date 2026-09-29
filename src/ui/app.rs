@@ -1398,6 +1398,7 @@ impl GitPanda {
                 window.focus(&self.commit_input.read(cx).focus);
             }
             "toast" => self.toast(ToastKind::Success, args.join(" "), cx),
+            "focus" => window.focus(&self.focus),
             "repo" => {
                 if let Some(p) = self.workspace.project().and_then(|p| p.repos.get(num(0))).cloned() {
                     self.open_repo(&p, cx);

@@ -52,7 +52,21 @@ impl Workspace {
     pub fn load() -> Self {
         let file = config_file();
         let text = file.as_ref().and_then(|f| std::fs::read_to_string(f).ok()).unwrap_or_default();
-        Workspace { file, ..Self::parse(&text) }
+        let mut ws = Workspace { file, ..Self::parse(&text) };
+        // Opened repositories come back from git with symlinks resolved
+        // (/var → /private/var on macOS), so saved paths must match that.
+        let real = |p: &PathBuf| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
+        for p in &mut ws.projects {
+            let mut repos = Vec::new();
+            for r in p.repos.iter().map(real) {
+                if !repos.contains(&r) {
+                    repos.push(r);
+                }
+            }
+            p.repos = repos;
+            p.last = p.last.as_ref().map(real);
+        }
+        ws
     }
 
     pub fn parse(text: &str) -> Self {
