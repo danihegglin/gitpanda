@@ -27,7 +27,7 @@
 
 <img alt="rust: 2024 edition" src="https://img.shields.io/badge/rust-2024%20edition-7aa2f7?style=for-the-badge&labelColor=161a2c&logo=rust&logoColor=c8d3f5">
 <img alt="built with: gpui" src="https://img.shields.io/badge/built%20with-gpui-73daca?style=for-the-badge&labelColor=161a2c">
-<img alt="platform: macOS" src="https://img.shields.io/badge/platform-macOS-bb9af7?style=for-the-badge&labelColor=161a2c&logo=apple&logoColor=c8d3f5">
+<img alt="platform: macOS | Linux | Windows" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-bb9af7?style=for-the-badge&labelColor=161a2c">
 <img alt="reads: libgit2" src="https://img.shields.io/badge/reads-libgit2-ff9e64?style=for-the-badge&labelColor=161a2c&logo=git&logoColor=c8d3f5">
 
 <br><br>
@@ -105,8 +105,33 @@ the top shows each one as a tab, so you can see at a glance where the work is:
 
 ## ⚡ Install and run
 
-You need macOS and a recent stable [Rust toolchain](https://rustup.rs). gpui
-also targets Linux, but that's untested here.
+**Download a build** from the [releases page](https://github.com/danihegglin/gitpanda/releases):
+
+| Platform | Package |
+|---|---|
+| macOS (Apple silicon + Intel) | `.dmg`, `.app.zip`, or a bare binary `.tar.gz` |
+| Debian, Ubuntu, Mint, Pop!_OS | `.deb`: `sudo apt install ./gitpanda_*.deb` |
+| Fedora, RHEL, openSUSE | `.rpm`: `sudo dnf install ./gitpanda-*.rpm` |
+| Arch, Manjaro, EndeavourOS | `.pkg.tar.zst`: `sudo pacman -U gitpanda-bin-*.pkg.tar.zst` |
+| Any Linux (glibc 2.35+) | `.AppImage`, or a bare binary `.tar.gz` |
+| Windows (x64, ARM64) | `.zip` |
+
+Linux builds are x86_64 and aarch64 (the Arch package is x86_64 only) and
+need a Vulkan driver. The macOS app is not notarized: the first time,
+right-click it and choose **Open**, or run
+`xattr -d com.apple.quarantine /Applications/gitpanda.app`.
+
+Releases are built by `.github/workflows/release.yml` when a `vX.Y.Z` tag
+matching `Cargo.toml`'s version is pushed; `ci.yml` builds and tests every
+push on Linux, macOS and Windows.
+
+**Build from source** with a recent stable [Rust toolchain](https://rustup.rs).
+On Linux, first install gpui's build dependencies (Debian/Ubuntu names):
+
+```sh
+sudo apt install libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev \
+  libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev
+```
 
 **Try it without installing:**
 

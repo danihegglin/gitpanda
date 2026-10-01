@@ -3,6 +3,8 @@ name = "gitpanda"
 version = "0.1.0"
 edition = "2024"
 description = "A fast, good-looking git client built on gpui"
+license = "MIT"
+repository = "https://github.com/danihegglin/gitpanda"
 
 [dependencies]
 gpui = "0.2.2"
@@ -36,3 +38,35 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 [lints.rust]
 # objc's msg_send! checks a `cargo-clippy` feature.
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
+
+# Linux packages, built by .github/workflows/release.yml.
+[package.metadata.deb]
+maintainer = "Daniel Hegglin"
+copyright = "2026, Daniel Hegglin"
+license-file = ["LICENSE", "0"]
+section = "devel"
+priority = "optional"
+depends = "$auto, git, libvulkan1"
+recommends = "mesa-vulkan-drivers, fonts-dejavu-core"
+extended-description = "A fast git client with line-level staging, an interactive rebase editor and a GPU-drawn UI."
+assets = [
+    ["target/release/gitpanda", "usr/bin/", "755"],
+    ["packaging/linux/gitpanda.desktop", "usr/share/applications/", "644"],
+    ["packaging/gitpanda.png", "usr/share/icons/hicolor/512x512/apps/", "644"],
+    ["packaging/gitpanda.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["LICENSE", "usr/share/doc/gitpanda/", "644"],
+]
+
+[package.metadata.generate-rpm]
+license = "MIT"
+summary = "A fast, good-looking git client built on gpui"
+assets = [
+    { source = "target/release/gitpanda", dest = "/usr/bin/gitpanda", mode = "755" },
+    { source = "packaging/linux/gitpanda.desktop", dest = "/usr/share/applications/gitpanda.desktop", mode = "644" },
+    { source = "packaging/gitpanda.png", dest = "/usr/share/icons/hicolor/512x512/apps/gitpanda.png", mode = "644" },
+    { source = "packaging/gitpanda.svg", dest = "/usr/share/icons/hicolor/scalable/apps/gitpanda.svg", mode = "644" },
+    { source = "LICENSE", dest = "/usr/share/licenses/gitpanda/LICENSE", mode = "644", doc = true },
+]
+
+[package.metadata.generate-rpm.requires]
+git = "*"

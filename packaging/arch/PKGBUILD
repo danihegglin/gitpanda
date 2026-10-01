@@ -1,0 +1,28 @@
+# Packages the prebuilt Linux binary from a release tarball.
+# CI fills in pkgver, _arch and the tarball; to build by hand, put
+# gitpanda-<pkgver>-linux-<arch>.tar.gz next to this file and run makepkg.
+pkgname=gitpanda-bin
+pkgver=0.1.0
+pkgrel=1
+_arch=x86_64
+pkgdesc="A fast, good-looking git client built on gpui"
+arch=('x86_64' 'aarch64')
+url="https://github.com/danihegglin/gitpanda"
+license=('MIT')
+depends=('git' 'glibc' 'gcc-libs' 'zlib' 'fontconfig' 'freetype2' 'libxkbcommon' 'libxkbcommon-x11'
+         'libx11' 'libxcb' 'wayland' 'vulkan-icd-loader')
+optdepends=('vulkan-driver: GPU rendering' 'ttf-dejavu: monospace font')
+provides=('gitpanda')
+conflicts=('gitpanda')
+options=('!debug' '!strip')
+source=("gitpanda-${pkgver}-linux-${_arch}.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+  cd "gitpanda-${pkgver}-linux-${_arch}"
+  install -Dm755 gitpanda "$pkgdir/usr/bin/gitpanda"
+  install -Dm644 gitpanda.desktop "$pkgdir/usr/share/applications/gitpanda.desktop"
+  install -Dm644 gitpanda.png "$pkgdir/usr/share/icons/hicolor/512x512/apps/gitpanda.png"
+  install -Dm644 gitpanda.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/gitpanda.svg"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
