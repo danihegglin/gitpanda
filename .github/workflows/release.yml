@@ -1,0 +1,291 @@
+name: Release
+
+# Push a tag `vX.Y.Z` (matching Cargo.toml's version) to build every package
+# and publish a GitHub release. Branch pushes and PRs that touch packaging,
+# and manual runs, only build the packages.
+on:
+  push:
+    tags: ["v*"]
+    branches: ["**"]
+    paths: [".github/workflows/release.yml", "packaging/**", "Cargo.toml", "Cargo.lock"]
+  pull_request:
+    paths: [".github/workflows/release.yml", "packaging/**", "Cargo.toml", "Cargo.lock"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_RELEASE_STRIP: "true"
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME doesn't match Cargo.toml version $version"
+            exit 1
+          fi
+
+  # Built on the oldest supported Ubuntu so the binary runs on any distro
+  # with glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+, Fedora, Arch, ...).
+  linux:
+    name: Linux ${{ matrix.arch }}
+    needs: version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, os: ubuntu-22.04 }
+          - { arch: aarch64, os: ubuntu-22.04-arm }
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev \
+            libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev \
+            file desktop-file-utils
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb,cargo-generate-rpm
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Smoke test
+        run: ./target/release/gitpanda --bench .
+
+      - name: Package tarball
+        run: |
+          desktop-file-validate packaging/linux/gitpanda.desktop
+          name=gitpanda-$VERSION-linux-$ARCH
+          mkdir -p dist "$name"
+          cp target/release/gitpanda packaging/linux/gitpanda.desktop \
+             packaging/gitpanda.png packaging/gitpanda.svg LICENSE README.md "$name/"
+          tar czf "dist/$name.tar.gz" "$name"
+
+      - name: Package .deb (Debian, Ubuntu, Mint, Pop!_OS, ...)
+        run: cargo deb --no-build --output dist/
+
+      - name: Package .rpm (Fedora, RHEL, openSUSE, ...)
+        run: cargo generate-rpm --output dist/
+
+      - name: Package AppImage
+        run: |
+          curl -fsSL -o linuxdeploy \
+            "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-$ARCH.AppImage"
+          chmod +x linuxdeploy
+          # Graphics and input stacks must come from the host, never the bundle.
+          APPIMAGE_EXTRACT_AND_RUN=1 LDAI_OUTPUT="dist/gitpanda-$VERSION-$ARCH.AppImage" ./linuxdeploy \
+            --appdir AppDir \
+            --executable target/release/gitpanda \
+            --desktop-file packaging/linux/gitpanda.desktop \
+            --icon-file packaging/gitpanda.png \
+            --exclude-library 'libvulkan*' \
+            --exclude-library 'libwayland*' \
+            --exclude-library 'libxkbcommon*' \
+            --exclude-library 'libX*' \
+            --exclude-library 'libxcb*' \
+            --output appimage
+          "dist/gitpanda-$VERSION-$ARCH.AppImage" --appimage-extract-and-run --bench .
+
+      - run: ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  # Install each package on a clean distro and run it.
+  linux-install:
+    name: Install on ${{ matrix.distro }}
+    needs: linux
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { distro: Ubuntu 22.04, image: "ubuntu:22.04", install: "apt-get update && apt-get install -y ./dist/*.deb" }
+          - { distro: Ubuntu 24.04, image: "ubuntu:24.04", install: "apt-get update && apt-get install -y ./dist/*.deb" }
+          - { distro: Debian 12, image: "debian:12", install: "apt-get update && apt-get install -y ./dist/*.deb" }
+          - { distro: Fedora, image: "fedora:latest", install: "dnf install -y ./dist/*.rpm" }
+          - { distro: openSUSE Tumbleweed, image: "opensuse/tumbleweed", install: "zypper --non-interactive install --allow-unsigned-rpm ./dist/*.rpm" }
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-x86_64
+          path: dist
+      - name: Install
+        run: ${{ matrix.install }}
+        env:
+          DEBIAN_FRONTEND: noninteractive
+      - name: Run
+        run: |
+          git init -q /tmp/repo
+          git -C /tmp/repo -c user.name=ci -c user.email=ci@example.com commit -q --allow-empty -m init
+          gitpanda --bench /tmp/repo
+
+  arch:
+    name: Arch Linux package
+    needs: [version, linux]
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-x86_64
+          path: artifacts
+      - name: Build with makepkg
+        run: |
+          pacman -Syu --noconfirm
+          useradd -m builder
+          mkdir -p /tmp/pkg dist
+          cp packaging/arch/PKGBUILD "artifacts/gitpanda-$VERSION-linux-x86_64.tar.gz" /tmp/pkg/
+          sed -i "s/^pkgver=.*/pkgver=$VERSION/" /tmp/pkg/PKGBUILD
+          chown -R builder /tmp/pkg
+          (cd /tmp/pkg && sudo -u builder makepkg --nodeps --noconfirm)
+          cp /tmp/pkg/*.pkg.tar.zst dist/
+      - name: Install and run
+        run: |
+          pacman -U --noconfirm dist/*.pkg.tar.zst
+          git init -q /tmp/repo
+          git -C /tmp/repo -c user.name=ci -c user.email=ci@example.com commit -q --allow-empty -m init
+          gitpanda --bench /tmp/repo
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch-x86_64
+          path: dist/*
+          if-no-files-found: error
+
+  macos:
+    name: macOS universal
+    needs: version
+    runs-on: macos-14
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+          lipo -create -output gitpanda \
+            target/aarch64-apple-darwin/release/gitpanda \
+            target/x86_64-apple-darwin/release/gitpanda
+          lipo -info gitpanda
+          ./gitpanda --bench .
+
+      - name: Bundle gitpanda.app
+        run: |
+          app=gitpanda.app
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+          cp gitpanda "$app/Contents/MacOS/"
+          sed "s/@VERSION@/$VERSION/g" packaging/macos/Info.plist > "$app/Contents/Info.plist"
+          mkdir gitpanda.iconset
+          for s in 16 32 128 256 512; do
+            sips -z $s $s packaging/gitpanda.png --out gitpanda.iconset/icon_${s}x${s}.png
+            d=$((s * 2)); [ $d -le 512 ] && sips -z $d $d packaging/gitpanda.png --out gitpanda.iconset/icon_${s}x${s}@2x.png
+          done
+          iconutil -c icns gitpanda.iconset -o "$app/Contents/Resources/gitpanda.icns"
+          # Ad-hoc signature: not notarized, so Gatekeeper asks on first launch.
+          codesign --force --deep --sign - "$app"
+
+      - name: Package
+        run: |
+          mkdir -p dist dmg
+          ditto -c -k --keepParent gitpanda.app "dist/gitpanda-$VERSION-macos-universal.app.zip"
+          cp -R gitpanda.app dmg/
+          ln -s /Applications dmg/Applications
+          hdiutil create -volname gitpanda -srcfolder dmg -ov -format UDZO "dist/gitpanda-$VERSION-macos-universal.dmg"
+          name=gitpanda-$VERSION-macos-universal
+          mkdir "$name" && cp gitpanda LICENSE README.md "$name/"
+          tar czf "dist/$name.tar.gz" "$name"
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-universal
+          path: dist/*
+          if-no-files-found: error
+
+  windows:
+    name: Windows ${{ matrix.arch }}
+    needs: version
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, target: x86_64-pc-windows-msvc }
+          - { arch: aarch64, target: aarch64-pc-windows-msvc }
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $name = "gitpanda-$env:VERSION-windows-${{ matrix.arch }}"
+          New-Item -ItemType Directory -Force -Path dist, $name | Out-Null
+          Copy-Item target/${{ matrix.target }}/release/gitpanda.exe, LICENSE, README.md $name
+          Compress-Archive -Path $name -DestinationPath "dist/$name.zip"
+          Get-ChildItem dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    if: github.ref_type == 'tag'
+    needs: [linux, linux-install, arch, macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

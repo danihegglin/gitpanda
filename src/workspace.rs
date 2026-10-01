@@ -2,7 +2,8 @@
 //! One repository is open at a time; the rest of its project is summarised.
 //!
 //! Saved as a small text file (`GITPANDA_PROJECTS`, else
-//! `$XDG_CONFIG_HOME/gitpanda/projects` or `~/.config/gitpanda/projects`):
+//! `$XDG_CONFIG_HOME/gitpanda/projects` or `~/.config/gitpanda/projects`,
+//! or `%APPDATA%\gitpanda\projects` on Windows):
 //!
 //! ```text
 //! active = foss
@@ -44,7 +45,8 @@ fn config_file() -> Option<PathBuf> {
     }
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .or_else(|| std::env::var_os("APPDATA").map(PathBuf::from))?;
     Some(base.join("gitpanda").join("projects"))
 }
 

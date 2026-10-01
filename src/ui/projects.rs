@@ -258,6 +258,8 @@ impl GitPanda {
         items.push(item(reveal, false, action(move |this, _, cx| {
             let res = if cfg!(target_os = "macos") {
                 std::process::Command::new("open").arg("-R").arg(&p).spawn()
+            } else if cfg!(windows) {
+                std::process::Command::new("explorer").arg(&p).spawn()
             } else {
                 std::process::Command::new("xdg-open").arg(&p).spawn()
             };

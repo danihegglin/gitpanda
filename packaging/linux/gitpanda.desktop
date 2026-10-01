@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=gitpanda
+GenericName=Git Client
+Comment=A fast, good-looking git client
+Exec=gitpanda %F
+Icon=gitpanda
+Terminal=false
+Categories=Development;RevisionControl;
+Keywords=git;vcs;commit;branch;
+StartupWMClass=gitpanda
