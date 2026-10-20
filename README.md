@@ -113,12 +113,14 @@ the top shows each one as a tab, so you can see at a glance where the work is:
 | Debian, Ubuntu, Mint, Pop!_OS | `.deb`: `sudo apt install ./gitpanda_*.deb` |
 | Fedora, RHEL, openSUSE | `.rpm`: `sudo dnf install ./gitpanda-*.rpm` |
 | Arch, Manjaro, EndeavourOS | `.pkg.tar.zst`: `sudo pacman -U gitpanda-bin-*.pkg.tar.zst` |
-| Any Linux (glibc 2.35+) | `.AppImage`, or a bare binary `.tar.gz` |
+| Any Linux (glibc 2.17+) | `.AppImage`, or a bare binary `.tar.gz` |
 | Windows (x64, ARM64) | `.zip` |
 
-Linux builds are x86_64 and aarch64 (the Arch package is x86_64 only) and
-need a Vulkan driver. The macOS app is not notarized: the first time,
-right-click it and choose **Open**, or run
+Linux builds are x86_64 and aarch64 (the Arch package is x86_64 only), run
+on glibc 2.17 or newer (RHEL/CentOS 7+, Ubuntu 18.04+, Debian 10+, ...), and
+need a Vulkan driver and git 2.15 or newer. RHEL/CentOS 7 ship git 1.8:
+install `rh-git227` from Software Collections. The macOS app is not
+notarized: the first time, right-click it and choose **Open**, or run
 `xattr -d com.apple.quarantine /Applications/gitpanda.app`.
 
 Releases are built by `.github/workflows/release.yml` when a `vX.Y.Z` tag
