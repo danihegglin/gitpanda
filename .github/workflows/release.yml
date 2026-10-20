@@ -33,8 +33,9 @@ jobs:
             exit 1
           fi
 
-  # Built on the oldest supported Ubuntu so the binary runs on any distro
-  # with glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+, Fedora, Arch, ...).
+  # Linked against glibc 2.17 with cargo-zigbuild, so the binary and every
+  # package run on any distro with glibc 2.17 or newer (RHEL/CentOS 7+,
+  # Ubuntu 18.04+, Debian 10+, Fedora, openSUSE, Arch, ...).
   linux:
     name: Linux ${{ matrix.arch }}
     needs: version
@@ -48,6 +49,12 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
       ARCH: ${{ matrix.arch }}
+      GLIBC: "2.17"
+      TARGET: ${{ matrix.arch }}-unknown-linux-gnu
+      # Link against the runner's libxcb and libxkbcommon, which zig doesn't
+      # look for on its own. Their newer glibc symbols are fine: at run time
+      # the binary loads the target system's copies.
+      RUSTFLAGS: -L native=/usr/lib/${{ matrix.arch }}-linux-gnu -C link-arg=-Wl,--allow-shlib-undefined
     steps:
       - uses: actions/checkout@v4
 
@@ -57,44 +64,59 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev \
             libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev \
-            file desktop-file-utils
+            file desktop-file-utils rpm
+          # cargo-zigbuild runs zig from this package.
+          pip3 install --user ziglang==0.17.0
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deb,cargo-generate-rpm
+          tool: cargo-zigbuild,cargo-deb,cargo-generate-rpm
 
       - name: Build
-        run: cargo build --release --locked
+        run: cargo zigbuild --release --locked --target "$TARGET.$GLIBC"
+
+      - name: Check glibc requirement
+        run: |
+          newest=$(objdump -T "target/$TARGET/release/gitpanda" | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -n1)
+          echo "newest glibc symbol: $newest"
+          if [ "$(printf '%s\n' "$newest" "GLIBC_$GLIBC" | sort -V | tail -n1)" != "GLIBC_$GLIBC" ]; then
+            echo "::error::gitpanda needs $newest, newer than glibc $GLIBC"
+            exit 1
+          fi
 
       - name: Smoke test
-        run: ./target/release/gitpanda --bench .
+        run: ./target/$TARGET/release/gitpanda --bench .
 
       - name: Package tarball
         run: |
           desktop-file-validate packaging/linux/gitpanda.desktop
           name=gitpanda-$VERSION-linux-$ARCH
           mkdir -p dist "$name"
-          cp target/release/gitpanda packaging/linux/gitpanda.desktop \
+          cp target/$TARGET/release/gitpanda packaging/linux/gitpanda.desktop \
              packaging/gitpanda.png packaging/gitpanda.svg LICENSE README.md "$name/"
           tar czf "dist/$name.tar.gz" "$name"
 
       - name: Package .deb (Debian, Ubuntu, Mint, Pop!_OS, ...)
-        run: cargo deb --no-build --output dist/
+        run: cargo deb --no-build --target "$TARGET" --output dist/
 
+      # rpm's find-requires lists only the libraries gitpanda links directly
+      # (the built-in one also lists the runner's indirect ones, like libbsd,
+      # which RHEL lacks), and RHEL/CentOS 7's rpm can't read zstd payloads.
       - name: Package .rpm (Fedora, RHEL, openSUSE, ...)
-        run: cargo generate-rpm --output dist/
+        run: cargo generate-rpm --target "$TARGET" --auto-req find-requires --payload-compress gzip --output dist/
 
       - name: Package AppImage
         run: |
           curl -fsSL -o linuxdeploy \
             "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-$ARCH.AppImage"
           chmod +x linuxdeploy
-          # Graphics and input stacks must come from the host, never the bundle.
+          # Graphics and input stacks must come from the host, never the bundle
+          # (libbsd and libmd only come in through the host's libXdmcp).
           APPIMAGE_EXTRACT_AND_RUN=1 LDAI_OUTPUT="dist/gitpanda-$VERSION-$ARCH.AppImage" ./linuxdeploy \
             --appdir AppDir \
-            --executable target/release/gitpanda \
+            --executable target/$TARGET/release/gitpanda \
             --desktop-file packaging/linux/gitpanda.desktop \
             --icon-file packaging/gitpanda.png \
             --exclude-library 'libvulkan*' \
@@ -102,6 +124,8 @@ jobs:
             --exclude-library 'libxkbcommon*' \
             --exclude-library 'libX*' \
             --exclude-library 'libxcb*' \
+            --exclude-library 'libbsd*' \
+            --exclude-library 'libmd*' \
             --output appimage
           "dist/gitpanda-$VERSION-$ARCH.AppImage" --appimage-extract-and-run --bench .
 
@@ -112,16 +136,26 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-  # Install each package on a clean distro and run it.
+  # Install each package on a clean distro, from the oldest glibc up, and run
+  # it. Plain `docker run`, as the actions' own Node needs glibc 2.28.
   linux-install:
     name: Install on ${{ matrix.distro }}
     needs: linux
     runs-on: ubuntu-latest
-    container: ${{ matrix.image }}
     strategy:
       fail-fast: false
       matrix:
         include:
+          - distro: CentOS 7 (glibc 2.17)
+            image: centos:7
+            # CentOS 7 is archived, and its git 1.8 is too old for gitpanda.
+            install: |
+              vault() { sed -i -e 's/^mirrorlist=/#mirrorlist=/' -e 's|^#\s*baseurl=http://mirror.centos.org|baseurl=https://vault.centos.org|' /etc/yum.repos.d/*.repo; }
+              vault && yum install -y centos-release-scl && vault
+              yum install -y ./dist/*.rpm rh-git227
+              . /opt/rh/rh-git227/enable
+          - { distro: Ubuntu 18.04, image: "ubuntu:18.04", install: "apt-get update && apt-get install -y ./dist/*.deb" }
+          - { distro: Rocky Linux 8, image: "rockylinux/rockylinux:8", install: "dnf install -y ./dist/*.rpm" }
           - { distro: Ubuntu 22.04, image: "ubuntu:22.04", install: "apt-get update && apt-get install -y ./dist/*.deb" }
           - { distro: Ubuntu 24.04, image: "ubuntu:24.04", install: "apt-get update && apt-get install -y ./dist/*.deb" }
           - { distro: Debian 12, image: "debian:12", install: "apt-get update && apt-get install -y ./dist/*.deb" }
@@ -132,15 +166,15 @@ jobs:
         with:
           name: linux-x86_64
           path: dist
-      - name: Install
-        run: ${{ matrix.install }}
+      - name: Install and run
         env:
-          DEBIAN_FRONTEND: noninteractive
-      - name: Run
+          IMAGE: ${{ matrix.image }}
+          INSTALL: ${{ matrix.install }}
         run: |
-          git init -q /tmp/repo
-          git -C /tmp/repo -c user.name=ci -c user.email=ci@example.com commit -q --allow-empty -m init
-          gitpanda --bench /tmp/repo
+          docker run --rm -v "$PWD/dist:/dist:ro" -w / -e DEBIAN_FRONTEND=noninteractive "$IMAGE" bash -exc "$INSTALL"'
+            git init -q /tmp/repo
+            git -C /tmp/repo -c user.name=ci -c user.email=ci@example.com commit -q --allow-empty -m init
+            gitpanda --bench /tmp/repo'
 
   arch:
     name: Arch Linux package
