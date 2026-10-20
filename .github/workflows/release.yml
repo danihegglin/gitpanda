@@ -51,9 +51,10 @@ jobs:
       ARCH: ${{ matrix.arch }}
       GLIBC: "2.17"
       TARGET: ${{ matrix.arch }}-unknown-linux-gnu
-      # The runner's own libxkbcommon etc. use newer glibc symbols. That's
-      # fine: at run time the binary loads the target system's copies.
-      RUSTFLAGS: -C link-arg=-Wl,--allow-shlib-undefined
+      # Link against the runner's libxcb and libxkbcommon, which zig doesn't
+      # look for on its own. Their newer glibc symbols are fine: at run time
+      # the binary loads the target system's copies.
+      RUSTFLAGS: -L native=/usr/lib/${{ matrix.arch }}-linux-gnu -C link-arg=-Wl,--allow-shlib-undefined
     steps:
       - uses: actions/checkout@v4
 
