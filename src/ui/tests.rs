@@ -567,3 +567,13 @@ fn commit_detail_follows_the_selection(cx: &mut TestAppContext) {
     assert_eq!(view.read_with(cx, |v, _| v.detail.as_ref().map(|d| d.oid)), Some(three));
 }
 
+
+#[gpui::test]
+fn commit_shortcut_keeps_the_keyboard_without_a_message_box(cx: &mut TestAppContext) {
+    let r = three_commits();
+    let (view, cx) = open(&r, cx);
+    cx.simulate_keystrokes("cmd-enter");
+    assert_eq!(toasts(&view, cx), ["Write a commit message first"]);
+    cx.simulate_keystrokes("down");
+    assert_eq!(selected_summary(&view, cx), "two");
+}

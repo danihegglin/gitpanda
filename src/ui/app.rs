@@ -722,7 +722,11 @@ impl GitPanda {
         let msg = self.commit_input.read(cx).text().trim().to_string();
         if msg.is_empty() {
             self.toast(ToastKind::Info, "Write a commit message first", cx);
-            window.focus(&self.commit_input.read(cx).focus);
+            // The message box is only on screen with the working tree
+            // selected; focusing it elsewhere would swallow the keyboard.
+            if self.selected == Some(wip_oid()) {
+                window.focus(&self.commit_input.read(cx).focus);
+            }
             return;
         }
         let staged = self.snap.as_ref().is_some_and(|s| !s.status.staged.is_empty());
