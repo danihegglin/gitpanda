@@ -8,3 +8,8 @@ mod sidebar;
 pub mod text_input;
 pub mod theme;
 mod widgets;
+
+#[cfg(test)]
+mod test_support;
+#[cfg(test)]
+mod tests;

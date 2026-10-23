@@ -16,14 +16,14 @@ use super::widgets::*;
 pub const WIDTH: f32 = 390.;
 const ROW_H: f32 = 26.;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Group {
     Conflicted,
     Unstaged,
     Staged,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WipRow {
     Header(Group, usize),
     File(Group, usize),
@@ -560,5 +560,156 @@ impl GitPanda {
             )
             .child(file_list)
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::TestAppContext;
+
+    use super::super::test_support::*;
+    use super::*;
+
+    #[test]
+    fn paths_split_into_name_and_folder() {
+        assert_eq!(split_path("src/ui/panel.rs"), ("panel.rs".into(), "src/ui/".into()));
+        assert_eq!(split_path("README.md"), ("README.md".into(), "".into()));
+    }
+
+    /// Two unstaged files (the second untracked) and one staged.
+    fn mixed_tree() -> TempRepo {
+        let r = three_commits();
+        r.write("one.txt", "changed\n");
+        r.write("new.txt", "new\n");
+        r.write("two.txt", "staged\n");
+        r.git(&["add", "two.txt"]);
+        r
+    }
+
+    #[gpui::test]
+    fn wip_rows_group_the_working_tree(cx: &mut TestAppContext) {
+        let r = mixed_tree();
+        let (view, cx) = open(&r, cx);
+        let rows = view.read_with(cx, |v, _| v.wip_rows());
+        assert_eq!(
+            rows,
+            [
+                WipRow::Header(Group::Unstaged, 2),
+                WipRow::File(Group::Unstaged, 0),
+                WipRow::File(Group::Unstaged, 1),
+                WipRow::Gap,
+                WipRow::Header(Group::Staged, 1),
+                WipRow::File(Group::Staged, 0),
+            ]
+        );
+    }
+
+    #[gpui::test]
+    fn conflicted_files_come_first(cx: &mut TestAppContext) {
+        let r = three_commits();
+        r.git(&["checkout", "-q", "-b", "topic"]);
+        r.commit("one.txt", "theirs\n", "theirs");
+        r.git(&["checkout", "-q", "main"]);
+        r.commit("one.txt", "ours\n", "ours");
+        let _ = crate::git::ops::Git::new(&r.0).run(&["merge", "-q", "topic"]);
+        let (view, cx) = open(&r, cx);
+        let rows = view.read_with(cx, |v, _| v.wip_rows());
+        assert_eq!(rows[..3], [WipRow::Header(Group::Conflicted, 1), WipRow::File(Group::Conflicted, 0), WipRow::Gap]);
+        // The resolver opens those, so stepping through files skips them.
+        let files = view.read_with(cx, |v, _| v.panel_files());
+        assert!(files.iter().all(|(_, p, ..)| p != "one.txt"), "{files:?}");
+    }
+
+    #[gpui::test]
+    fn panel_files_in_display_order(cx: &mut TestAppContext) {
+        let r = mixed_tree();
+        let (view, cx) = open(&r, cx);
+        let files = view.read_with(cx, |v, _| v.panel_files());
+        assert_eq!(
+            files,
+            [
+                (DiffSource::Unstaged, "one.txt".to_string(), FileStatus::Modified, 1),
+                (DiffSource::Unstaged, "new.txt".to_string(), FileStatus::Untracked, 2),
+                (DiffSource::Staged, "two.txt".to_string(), FileStatus::Modified, 5),
+            ]
+        );
+    }
+
+    #[gpui::test]
+    fn arrows_walk_the_file_list(cx: &mut TestAppContext) {
+        let r = mixed_tree();
+        let (view, cx) = open(&r, cx);
+        let open_file = |cx: &mut gpui::VisualTestContext| {
+            view.read_with(cx, |v, _| v.file_view.as_ref().map(|f| (f.source.clone(), f.path.clone())))
+        };
+        cx.simulate_keystrokes("right");
+        assert_eq!(open_file(cx), Some((DiffSource::Unstaged, "one.txt".into())));
+        cx.simulate_keystrokes("down");
+        assert_eq!(open_file(cx), Some((DiffSource::Unstaged, "new.txt".into())));
+        cx.simulate_keystrokes("j");
+        assert_eq!(open_file(cx), Some((DiffSource::Staged, "two.txt".into())));
+        // Stops at the last file, and doesn't move the graph selection.
+        cx.simulate_keystrokes("down");
+        assert_eq!(open_file(cx), Some((DiffSource::Staged, "two.txt".into())));
+        assert_eq!(view.read_with(cx, |v, _| v.selected), Some(crate::git::repo::wip_oid()));
+        cx.simulate_keystrokes("up up up");
+        assert_eq!(open_file(cx), Some((DiffSource::Unstaged, "one.txt".into())));
+        cx.simulate_keystrokes("left");
+        assert_eq!(open_file(cx), None);
+    }
+
+    #[gpui::test]
+    fn arrows_walk_a_commits_files(cx: &mut TestAppContext) {
+        let r = three_commits();
+        r.write("a.txt", "a\n");
+        r.write("b.txt", "b\n");
+        r.git(&["add", "."]);
+        r.git(&["commit", "-q", "-m", "two files"]);
+        let (view, cx) = open(&r, cx);
+        let head = view.read_with(cx, |v, _| v.selected.unwrap());
+        assert_eq!(view.read_with(cx, |v, _| v.panel_files().len()), 2);
+        cx.simulate_keystrokes("right");
+        cx.run_until_parked();
+        view.read_with(cx, |v, _| {
+            let fv = v.file_view.as_ref().unwrap();
+            assert_eq!((fv.source.clone(), fv.path.as_str()), (DiffSource::Commit(head), "a.txt"));
+            assert!(fv.diff.is_some());
+        });
+        cx.simulate_keystrokes("down");
+        assert_eq!(view.read_with(cx, |v, _| v.file_view.as_ref().unwrap().path.clone()), "b.txt");
+    }
+
+    #[gpui::test]
+    fn file_menus(cx: &mut TestAppContext) {
+        let r = three_commits();
+        let (view, cx) = open(&r, cx);
+        let menu = |staged, untracked, cx: &mut gpui::VisualTestContext| {
+            view.read_with(cx, |v, _| labels(&v.file_menu("f.txt".into(), staged, untracked)))
+        };
+        let common = ["Rename / move…", "Open in default app", "Reveal in Finder", "Copy path"];
+        assert_eq!(menu(true, false, cx), [&["Unstage"][..], &common].concat());
+        assert_eq!(menu(false, false, cx), [&["Stage"][..], &common, &["—", "Discard changes…"]].concat());
+        assert_eq!(menu(false, true, cx).last().unwrap(), "Delete file…");
+    }
+
+    #[gpui::test]
+    fn stage_and_discard_from_the_file_menu(cx: &mut TestAppContext) {
+        let r = mixed_tree();
+        let (view, cx) = open(&r, cx);
+        let items = view.read_with(cx, |v, _| v.file_menu("one.txt".into(), false, false));
+        click(&view, items, "Stage", cx);
+        assert_eq!(r.git(&["diff", "--cached", "--name-only"]).split_whitespace().collect::<Vec<_>>(), ["one.txt", "two.txt"]);
+
+        // Deleting an untracked file asks first.
+        let items = view.read_with(cx, |v, _| v.file_menu("new.txt".into(), false, true));
+        click(&view, items, "Delete file…", cx);
+        assert!(r.0.join("new.txt").exists());
+        view.read_with(cx, |v, _| match &v.modal {
+            Some(super::super::app::Modal::Confirm { body, .. }) => assert_eq!(body.as_ref(), "new.txt is untracked and will be deleted."),
+            _ => panic!("expected a confirmation"),
+        });
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert!(!r.0.join("new.txt").exists());
     }
 }

@@ -289,3 +289,153 @@ impl Render for TextInput {
             .child(body)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use gpui::{AppContext, Entity, TestAppContext, VisualTestContext};
+
+    use super::*;
+
+    /// A focused input in its own window.
+    fn input(cx: &mut TestAppContext, multiline: bool) -> (Entity<TextInput>, &mut VisualTestContext) {
+        cx.add_window_view(|window, cx| {
+            let i = TextInput::new(cx, "", multiline);
+            window.focus(&i.focus);
+            i
+        })
+    }
+
+    /// Runs `f` on an input holding `text`, with the cursor at `|`.
+    fn at<R>(cx: &mut TestAppContext, text: &str, f: impl FnOnce(&TextInput) -> R) -> R {
+        let i = cx.new(|cx| TextInput::new(cx, "", true));
+        i.update(cx, |i, _| {
+            i.cursor = text.find('|').expect("cursor marker");
+            i.text = text.replacen('|', "", 1);
+            f(i)
+        })
+    }
+
+    /// The input's text with `|` at the cursor.
+    fn shown(i: &Entity<TextInput>, cx: &mut VisualTestContext) -> String {
+        i.read_with(cx, |i, _| {
+            let mut t = i.text.clone();
+            t.insert(i.cursor, '|');
+            t
+        })
+    }
+
+    #[gpui::test]
+    fn moves_by_character_over_multibyte_text(cx: &mut TestAppContext) {
+        assert_eq!(at(cx, "aé|b", |i| i.prev()), 1);
+        assert_eq!(at(cx, "a|éb", |i| i.next()), 3);
+        assert_eq!(at(cx, "|ab", |i| i.prev()), 0);
+        assert_eq!(at(cx, "ab|", |i| i.next()), 2);
+    }
+
+    #[gpui::test]
+    fn moves_by_word(cx: &mut TestAppContext) {
+        assert_eq!(at(cx, "foo bar_baz|", |i| i.word_left()), 4);
+        assert_eq!(at(cx, "foo bar  |", |i| i.word_left()), 4);
+        assert_eq!(at(cx, "foo|", |i| i.word_left()), 0);
+        assert_eq!(at(cx, "|foo bar", |i| i.word_right()), 3);
+        assert_eq!(at(cx, "foo| bar", |i| i.word_right()), 7);
+        assert_eq!(at(cx, "foo bar|", |i| i.word_right()), 7);
+    }
+
+    #[gpui::test]
+    fn finds_line_bounds(cx: &mut TestAppContext) {
+        assert_eq!(at(cx, "one\ntw|o\nthree", |i| (i.line_start(), i.line_end())), (4, 7));
+        assert_eq!(at(cx, "o|ne", |i| (i.line_start(), i.line_end())), (0, 3));
+    }
+
+    #[gpui::test]
+    fn moves_vertically_keeping_the_column(cx: &mut TestAppContext) {
+        assert_eq!(at(cx, "abcd\nab|cd", |i| i.vertical(false)), Some(2));
+        assert_eq!(at(cx, "ab|cd\nabcd", |i| i.vertical(true)), Some(7));
+        // A shorter line clamps the column to its end.
+        assert_eq!(at(cx, "abcd|\nab\nabcd", |i| i.vertical(true)), Some(7));
+        // Columns count characters, not bytes.
+        assert_eq!(at(cx, "éé|é\nabc", |i| i.vertical(true)), Some(9));
+        assert_eq!(at(cx, "ab|c", |i| i.vertical(false)), None);
+        assert_eq!(at(cx, "ab|c", |i| i.vertical(true)), None);
+    }
+
+    #[gpui::test]
+    fn types_and_edits(cx: &mut TestAppContext) {
+        let (i, cx) = input(cx, false);
+        cx.simulate_input("hello world");
+        assert_eq!(shown(&i, cx), "hello world|");
+        cx.simulate_keystrokes("alt-backspace");
+        assert_eq!(shown(&i, cx), "hello |");
+        cx.simulate_keystrokes("left left backspace");
+        assert_eq!(shown(&i, cx), "hel|o ");
+        cx.simulate_keystrokes("delete");
+        assert_eq!(shown(&i, cx), "hel| ");
+        cx.simulate_keystrokes("home");
+        assert_eq!(shown(&i, cx), "|hel ");
+        cx.simulate_keystrokes("end");
+        assert_eq!(shown(&i, cx), "hel |");
+        cx.simulate_keystrokes("cmd-backspace");
+        assert_eq!(shown(&i, cx), "|");
+    }
+
+    #[gpui::test]
+    fn single_line_input_flattens_newlines(cx: &mut TestAppContext) {
+        let (i, cx) = input(cx, false);
+        i.update(cx, |i, _| i.insert("a\nb\r\nc"));
+        assert_eq!(shown(&i, cx), "a b  c|");
+    }
+
+    #[gpui::test]
+    fn enter_adds_a_line_only_when_multiline(cx: &mut TestAppContext) {
+        let (i, cx) = input(cx, true);
+        cx.simulate_input("ab");
+        cx.simulate_keystrokes("enter");
+        cx.simulate_input("cd");
+        assert_eq!(shown(&i, cx), "ab\ncd|");
+        cx.simulate_keystrokes("up");
+        assert_eq!(shown(&i, cx), "ab|\ncd");
+        cx.simulate_keystrokes("up");
+        assert_eq!(shown(&i, cx), "|ab\ncd");
+        cx.simulate_keystrokes("down down");
+        assert_eq!(shown(&i, cx), "ab\ncd|");
+        // ⌘⏎ is left to the owner (to commit, say).
+        cx.simulate_keystrokes("cmd-enter");
+        assert_eq!(shown(&i, cx), "ab\ncd|");
+
+        let (i, cx) = input(&mut cx.cx, false);
+        cx.simulate_input("ab");
+        cx.simulate_keystrokes("enter");
+        assert_eq!(shown(&i, cx), "ab|");
+    }
+
+    #[gpui::test]
+    fn select_all_then_type_replaces(cx: &mut TestAppContext) {
+        let (i, cx) = input(cx, false);
+        i.update(cx, |i, cx| {
+            i.set_text("old name", cx);
+            i.select_all(cx);
+        });
+        cx.simulate_input("new");
+        assert_eq!(shown(&i, cx), "new|");
+
+        cx.simulate_keystrokes("cmd-a backspace");
+        assert_eq!(shown(&i, cx), "|");
+        // Selecting nothing selects nothing.
+        cx.simulate_keystrokes("cmd-a");
+        assert!(!i.read_with(cx, |i, _| i.all_selected));
+    }
+
+    #[gpui::test]
+    fn copy_cut_and_paste(cx: &mut TestAppContext) {
+        let (i, cx) = input(cx, false);
+        cx.simulate_input("abc");
+        cx.simulate_keystrokes("cmd-c");
+        assert_eq!(cx.read_from_clipboard().and_then(|c| c.text()).as_deref(), Some("abc"));
+        cx.simulate_keystrokes("cmd-x");
+        assert_eq!(shown(&i, cx), "|");
+        cx.write_to_clipboard(ClipboardItem::new_string("x\ny".into()));
+        cx.simulate_keystrokes("cmd-v cmd-v");
+        assert_eq!(shown(&i, cx), "x yx y|");
+    }
+}
