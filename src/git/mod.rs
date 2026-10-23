@@ -5,4 +5,4 @@ pub mod ops;
 pub mod repo;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
