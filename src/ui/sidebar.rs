@@ -131,7 +131,7 @@ impl GitPanda {
                     )
                     .children(track.map(|t| div().text_size(px(11.)).text_color(c(CYAN)).child(t)))
                     .on_click(cx.listener(move |this, ev: &ClickEvent, _, cx| {
-                        if ev.click_count() == 2 {
+                        if ev.click_count() == 2 && !this.bare() {
                             let n = n2.clone();
                             this.run("Checking out", move |g| g.checkout(&n).map(|_| format!("Switched to {n}")), cx);
                         } else {
@@ -158,7 +158,7 @@ impl GitPanda {
                     .child(div().text_color(c(CYAN)).text_size(px(11.)).child("☁"))
                     .child(div().flex_1().truncate().text_color(c(FG_DARK)).child(b.name.clone()))
                     .on_click(cx.listener(move |this, ev: &ClickEvent, _, cx| {
-                        if ev.click_count() == 2 {
+                        if ev.click_count() == 2 && !this.bare() {
                             let n = n2.clone();
                             this.run("Checking out", move |g| g.checkout_remote(&n).map(|_| format!("Checked out {n}")), cx);
                         } else {
@@ -219,11 +219,18 @@ impl GitPanda {
         let head = self.head_branch();
         let current = head.clone().unwrap_or_else(|| "HEAD".into());
         let is_head = !remote && head.as_deref() == Some(name);
+        let bare = self.bare();
         let mut add = |label: String, danger: bool, f: super::app::Action| {
             items.push(MenuItem::Action { label: label.into(), danger, action: f });
         };
         let n = name.to_string();
-        if !is_head {
+        if bare {
+            // Without a working tree there is nothing to check out, merge,
+            // rebase or pull into; pushing the HEAD branch still works.
+            if is_head {
+                add("Push".into(), false, action(|this, _, cx| this.push(false, cx)));
+            }
+        } else if !is_head {
             let n1 = n.clone();
             add(format!("Checkout {n}"), false, action(move |this, _, cx| {
                 let n = n1.clone();
@@ -254,7 +261,9 @@ impl GitPanda {
             }));
             add("Pull".into(), false, action(|this, _, cx| this.run("Pulling", |g| g.pull().map(|_| "Pulled".into()), cx)));
         }
-        items.push(MenuItem::Separator);
+        if !items.is_empty() {
+            items.push(MenuItem::Separator);
+        }
         let mut add = |label: String, danger: bool, f: super::app::Action| {
             items.push(MenuItem::Action { label: label.into(), danger, action: f });
         };
@@ -304,15 +313,16 @@ impl GitPanda {
     fn tag_menu(&self, name: &str, oid: Oid) -> Vec<MenuItem> {
         let n = name.to_string();
         let n2 = n.clone();
-        vec![
-            MenuItem::Action {
-                label: format!("Checkout {n} (detached)").into(),
-                danger: false,
-                action: action(move |this, _, cx| {
-                    let n = n2.clone();
-                    this.run("Checking out", move |g| g.checkout(&n).map(|_| format!("HEAD detached at {n}")), cx)
-                }),
-            },
+        let checkout = MenuItem::Action {
+            label: format!("Checkout {n} (detached)").into(),
+            danger: false,
+            action: action(move |this, _, cx| {
+                let n = n2.clone();
+                this.run("Checking out", move |g| g.checkout(&n).map(|_| format!("HEAD detached at {n}")), cx)
+            }),
+        };
+        let mut items: Vec<MenuItem> = (!self.bare()).then_some(checkout).into_iter().collect();
+        items.extend([
             MenuItem::Action {
                 label: "Create branch here…".into(),
                 danger: false,
@@ -327,7 +337,8 @@ impl GitPanda {
                     this.run("Deleting", move |g| g.delete_tag(&n).map(|_| format!("Deleted tag {n}")), cx)
                 }),
             },
-        ]
+        ]);
+        items
     }
 }
 

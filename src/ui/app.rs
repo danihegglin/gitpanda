@@ -713,6 +713,12 @@ impl GitPanda {
         self.snap.as_ref()?.head.branch.as_ref().map(|s| s.to_string())
     }
 
+    /// Whether the open repository is bare, so has nothing to stage,
+    /// commit, stash or check out into.
+    pub fn bare(&self) -> bool {
+        self.snap.as_ref().is_some_and(|s| s.bare)
+    }
+
     pub fn commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let msg = self.commit_input.read(cx).text().trim().to_string();
         if msg.is_empty() {
@@ -1193,7 +1199,7 @@ impl GitPanda {
                 }
                 cx.notify();
             }
-            "enter" if cmd => self.commit(window, cx),
+            "enter" if cmd && !self.bare() => self.commit(window, cx),
             "r" if cmd => {
                 self.reload(cx);
                 self.toast(ToastKind::Info, "Refreshed", cx);
@@ -1209,8 +1215,8 @@ impl GitPanda {
                 let at = self.selected.filter(|o| *o != wip_oid()).map_or("HEAD".to_string(), |o| o.to_string());
                 self.new_branch_at(at, window, cx);
             }
-            "s" if cmd && m.shift => self.stash(window, cx),
-            "backspace" if cmd && self.file_view.is_none() && self.conflict.is_none() => {
+            "s" if cmd && m.shift && !self.bare() => self.stash(window, cx),
+            "backspace" if cmd && !self.bare() && self.file_view.is_none() && self.conflict.is_none() => {
                 self.confirm_drop(self.selected_commits(), cx)
             }
             // With a file open, the arrows walk the panel's file list.

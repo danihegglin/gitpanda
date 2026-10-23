@@ -58,6 +58,8 @@ impl GitPanda {
         let branch = snap.and_then(|s| s.head.branch.clone());
         let head_short = snap.and_then(|s| s.head.oid).map(|o| o.to_string()[..7].to_string());
         let upstream = snap.and_then(|s| s.branches.iter().find(|b| b.is_head)).map(|b| (b.ahead, b.behind, b.upstream.is_some()));
+        // Pull and stash need a working tree.
+        let bare = self.bare();
 
         div()
             .flex()
@@ -116,15 +118,17 @@ impl GitPanda {
             )
             .child(drag_space())
             .child(tool("fetch", "⟳", "Fetch").on_click(cx.listener(|this, _, _, cx| this.run("Fetching", |g| g.fetch().map(|_| "Fetched all remotes".into()), cx))))
-            .child(tool("pull", "↓", "Pull").on_click(cx.listener(|this, _, _, cx| this.run("Pulling", |g| g.pull().map(|_| "Pulled".into()), cx))))
+            .when(!bare, |d| d.child(tool("pull", "↓", "Pull").on_click(cx.listener(|this, _, _, cx| this.run("Pulling", |g| g.pull().map(|_| "Pulled".into()), cx)))))
             .child(tool("push", "↑", "Push").on_click(cx.listener(|this, _, _, cx| this.push(false, cx))))
             .child(div().w(px(1.)).h(px(28.)).bg(c(BORDER_HI)).mx(px(6.)))
             .child(tool("branch", "⑂", "Branch").on_click(cx.listener(|this, _, window, cx| {
                 let at = this.selected.filter(|o| *o != crate::git::repo::wip_oid()).map_or("HEAD".to_string(), |o| o.to_string());
                 this.new_branch_at(at, window, cx)
             })))
-            .child(tool("stash", "⊟", "Stash").on_click(cx.listener(|this, _, window, cx| this.stash(window, cx))))
-            .child(tool("pop", "⊞", "Pop").on_click(cx.listener(|this, _, _, cx| this.run("Popping", |g| g.stash_pop(0).map(|_| "Popped stash".into()), cx))))
+            .when(!bare, |d| {
+                d.child(tool("stash", "⊟", "Stash").on_click(cx.listener(|this, _, window, cx| this.stash(window, cx))))
+                    .child(tool("pop", "⊞", "Pop").on_click(cx.listener(|this, _, _, cx| this.run("Popping", |g| g.stash_pop(0).map(|_| "Popped stash".into()), cx))))
+            })
             .child(drag_space())
             .child(
                 div()
@@ -209,6 +213,9 @@ impl GitPanda {
             let n = s.commits.iter().filter(|c| c.oid != crate::git::repo::wip_oid()).count();
             left.push(format!("{n}{} commits", if s.truncated { "+" } else { "" }));
             left.push(format!("{} branches", s.branches.len()));
+            if s.bare {
+                left.push("bare repository".into());
+            }
             left.push(format!("loaded in {:.1} ms", s.load_time.as_secs_f64() * 1000.));
         }
         div()
