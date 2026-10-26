@@ -310,7 +310,7 @@ impl GitPanda {
                 danger: false,
                 action: action(move |this, _, cx| {
                     let n = n2.clone();
-                    this.run("Checking out", move |g| g.checkout(&n).map(|_| format!("HEAD detached at {n}")), cx)
+                    this.run("Checking out", move |g| g.checkout_detached(oid).map(|_| format!("HEAD detached at {n}")), cx)
                 }),
             },
             MenuItem::Action {

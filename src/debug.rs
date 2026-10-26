@@ -9,6 +9,10 @@ use gpui::{App, Entity, Keystroke, Window};
 use crate::ui::app::GitPanda;
 
 pub fn start(window: &mut Window, view: Entity<GitPanda>, cx: &mut App) {
+    // Release builds only listen when built with `--features dev-script`.
+    if !cfg!(any(debug_assertions, feature = "dev-script")) {
+        return;
+    }
     let Ok(script) = std::env::var("GITPANDA_SCRIPT") else { return };
     let cmds: Vec<String> = script.split(';').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
     window

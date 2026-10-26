@@ -27,6 +27,9 @@ opt-level = 2
 # Metal toolchain. Build with --no-default-features to precompile them.
 default = ["runtime-shaders"]
 runtime-shaders = ["gpui/runtime_shaders"]
+# Lets release builds be driven by GITPANDA_SCRIPT (see src/debug.rs), as
+# docs/make-demo.py does. Debug builds always can.
+dev-script = []
 
 # Used only by the GITPANDA_SCRIPT self-screenshot hook; gpui already builds them.
 [target.'cfg(target_os = "macos")'.dependencies]

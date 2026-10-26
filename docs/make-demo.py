@@ -244,7 +244,7 @@ def main():
         + f"[side quests]\n{side.path}\n"
     )
 
-    subprocess.run(["cargo", "build", "--release", "-q"], cwd=ROOT, check=True)
+    subprocess.run(["cargo", "build", "--release", "-q", "--features", "dev-script"], cwd=ROOT, check=True)
     script = []
     for i, (cmds, _) in enumerate(TOUR):
         script += [cmds, f"shot {frames / f'{i:02}.png'}"]

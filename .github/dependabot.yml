@@ -1,0 +1,18 @@
+# Weekly PRs for new crate and action versions. Actions stay pinned to commit
+# SHAs; Dependabot updates the SHA and the version comment together.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo:
+        patterns: ["*"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

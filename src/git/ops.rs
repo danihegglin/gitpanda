@@ -16,6 +16,16 @@ pub struct Git<'a> {
     pub dir: &'a Path,
 }
 
+/// Ref names come from the repository and its remotes, and git accepts names
+/// like `--exec=cmd` or `--force`: anything starting with a dash would be read
+/// as an option where git expects a revision.
+fn ref_arg(name: &str) -> Result<&str> {
+    if name.is_empty() || name.starts_with('-') {
+        bail!("refusing to use {name:?}: a ref name starting with \"-\" would be read as an option");
+    }
+    Ok(name)
+}
+
 fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
@@ -28,6 +38,7 @@ impl<'a> Git<'a> {
     fn command(&self, args: &[&str]) -> Command {
         let mut c = Command::new("git");
         c.current_dir(self.dir)
+            .args(super::repo::git_overrides(self.dir))
             .args(args)
             .env("GIT_TERMINAL_PROMPT", "0")
             // Never block on an editor: messages come from us.
@@ -187,61 +198,70 @@ impl<'a> Git<'a> {
 
     // ---- branches & tags -------------------------------------------------
 
-    pub fn checkout(&self, target: &str) -> Result<()> {
-        self.run(&["checkout", target]).map(drop)
+    /// Switch to a local branch.
+    pub fn checkout(&self, branch: &str) -> Result<()> {
+        // The trailing `--` makes git read the name as a branch, never a path.
+        self.run(&["checkout", ref_arg(branch)?, "--"]).map(drop)
+    }
+
+    /// Detach HEAD at a commit (checking out a tag or a bare commit).
+    pub fn checkout_detached(&self, oid: Oid) -> Result<()> {
+        self.run(&["checkout", "--detach", &oid.to_string(), "--"]).map(drop)
     }
 
     /// Check out a remote branch: switch to the local branch tracking it,
     /// creating one if needed.
     pub fn checkout_remote(&self, remote_branch: &str) -> Result<()> {
-        let local = remote_branch.split_once('/').map_or(remote_branch, |(_, b)| b);
+        let local = remote_branch_parts(self.dir, remote_branch).map_or(remote_branch.to_string(), |(_, b)| b);
+        let local = local.as_str();
         let exists = Repository::open(self.dir)?
             .find_branch(local, git2::BranchType::Local)
             .is_ok();
         if exists {
             self.checkout(local)
         } else {
-            self.run(&["checkout", "--track", remote_branch]).map(drop)
+            self.run(&["checkout", "--track", ref_arg(remote_branch)?]).map(drop)
         }
     }
 
     pub fn create_branch(&self, name: &str, at: &str, checkout: bool) -> Result<()> {
+        let (name, at) = (ref_arg(name)?, ref_arg(at)?);
         if checkout {
-            self.run(&["checkout", "-b", name, at]).map(drop)
+            self.run(&["checkout", "-b", name, at, "--"]).map(drop)
         } else {
             self.run(&["branch", name, at]).map(drop)
         }
     }
 
     pub fn rename_branch(&self, old: &str, new: &str) -> Result<()> {
-        self.run(&["branch", "-m", old, new]).map(drop)
+        self.run(&["branch", "-m", ref_arg(old)?, ref_arg(new)?]).map(drop)
     }
 
     pub fn delete_branch(&self, name: &str) -> Result<()> {
-        self.run(&["branch", "-D", name]).map(drop)
+        // `--` lets a branch with a hostile name still be deleted.
+        self.run(&["branch", "-D", "--", name]).map(drop)
     }
 
     pub fn delete_remote_branch(&self, remote_branch: &str) -> Result<()> {
-        let (remote, branch) = remote_branch
-            .split_once('/')
-            .context("not a remote branch")?;
-        self.run(&["push", remote, "--delete", branch]).map(drop)
+        let (remote, branch) = remote_branch_parts(self.dir, remote_branch).context("not a remote branch")?;
+        let refspec = format!(":refs/heads/{branch}");
+        self.run(&["push", ref_arg(&remote)?, &refspec]).map(drop)
     }
 
     pub fn create_tag(&self, name: &str, at: &str) -> Result<()> {
-        self.run(&["tag", name, at]).map(drop)
+        self.run(&["tag", ref_arg(name)?, ref_arg(at)?]).map(drop)
     }
 
     pub fn delete_tag(&self, name: &str) -> Result<()> {
-        self.run(&["tag", "-d", name]).map(drop)
+        self.run(&["tag", "-d", "--", name]).map(drop)
     }
 
     pub fn merge(&self, what: &str) -> Result<()> {
-        self.run(&["merge", "--no-edit", what]).map(drop)
+        self.run(&["merge", "--no-edit", ref_arg(what)?]).map(drop)
     }
 
     pub fn rebase_onto(&self, onto: &str) -> Result<()> {
-        self.run(&["rebase", "--autostash", onto]).map(drop)
+        self.run(&["rebase", "--autostash", ref_arg(onto)?]).map(drop)
     }
 
     // ---- remotes & stash -------------------------------------------------
@@ -262,7 +282,7 @@ impl<'a> Git<'a> {
         if !has_upstream {
             let remote = self.run(&["remote"])?;
             let remote = remote.lines().next().context("no remote configured")?.to_string();
-            args.extend(["-u", &remote, branch]);
+            args.extend(["-u", ref_arg(&remote)?, ref_arg(branch)?]);
             return self.run(&args).map(drop);
         }
         self.run(&args).map(drop)
@@ -330,7 +350,12 @@ impl<'a> Git<'a> {
     }
 
     pub fn write_resolved(&self, path: &str, content: &str) -> Result<()> {
-        std::fs::write(self.dir.join(path), content)?;
+        let full = self.dir.join(path);
+        // A conflicted symlink would make this write land outside the repository.
+        if !std::fs::symlink_metadata(&full)?.is_file() {
+            bail!("{path} is not a regular file");
+        }
+        std::fs::write(full, content)?;
         self.stage(&[path])
     }
 
@@ -343,6 +368,7 @@ impl<'a> Git<'a> {
         let git_dir = self.git_dir()?;
         let todo_path = git_dir.join("gitpanda-rebase-todo");
         let mut todo = String::new();
+        let mut msg_files = Vec::new();
         let mut i = 0;
         while i < steps.len() {
             let s = &steps[i];
@@ -360,6 +386,7 @@ impl<'a> Git<'a> {
                 if s.action != RebaseAction::Drop {
                     let msg_path = git_dir.join(format!("gitpanda-msg-{i}"));
                     std::fs::write(&msg_path, msg)?;
+                    msg_files.push(msg_path.clone());
                     todo.push_str(&format!(
                         "exec git commit --amend --allow-empty --only --cleanup=strip -F {}\n",
                         quote(&msg_path.to_string_lossy())
@@ -380,7 +407,14 @@ impl<'a> Git<'a> {
             None => args.push("--root"),
         }
         let r = self.run_env(&args, &[("GIT_SEQUENCE_EDITOR", &editor)]);
-        let _ = std::fs::remove_file(&todo_path);
+        // A rebase stopped on a conflict still needs its message files.
+        if r.is_ok() {
+            for f in msg_files.iter().chain([&todo_path]) {
+                let _ = std::fs::remove_file(f);
+            }
+        } else {
+            let _ = std::fs::remove_file(&todo_path);
+        }
         r.map(drop)
     }
 }
@@ -426,6 +460,16 @@ pub struct RebaseStep {
     pub summary: String,
     pub message: Option<String>,
     pub action: RebaseAction,
+}
+
+/// Splits a remote-tracking branch like `my/fork/feature` into its remote
+/// (`my/fork`, which may itself contain slashes) and branch (`feature`).
+fn remote_branch_parts(dir: &Path, remote_branch: &str) -> Option<(String, String)> {
+    let repo = Repository::open(dir).ok()?;
+    let remote = repo.branch_remote_name(&format!("refs/remotes/{remote_branch}")).ok()?;
+    let remote = remote.as_str()?.to_string();
+    let branch = remote_branch.strip_prefix(&remote)?.strip_prefix('/')?.to_string();
+    Some((remote, branch))
 }
 
 /// Commits from `oldest` up to HEAD along first parents, oldest first, plus
