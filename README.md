@@ -123,9 +123,11 @@ install `rh-git227` from Software Collections. The macOS app is not
 notarized: the first time, right-click it and choose **Open**, or run
 `xattr -d com.apple.quarantine /Applications/gitpanda.app`.
 
-Releases are built by `.github/workflows/release.yml` when a `vX.Y.Z` tag
-matching `Cargo.toml`'s version is pushed; `ci.yml` builds and tests every
-push on Linux, macOS and Windows.
+To release, bump the version in `Cargo.toml` (and `Cargo.lock` and
+`packaging/arch/PKGBUILD`) and merge it to `main`: `tag.yml` then tags the
+commit `vX.Y.Z` and starts `release.yml`, which builds every package and
+publishes the GitHub release. Pushing a matching tag by hand works too.
+`ci.yml` builds and tests every push on Linux, macOS and Windows.
 
 **Build from source** with a recent stable [Rust toolchain](https://rustup.rs).
 On Linux, first install gpui's build dependencies (Debian/Ubuntu names):
