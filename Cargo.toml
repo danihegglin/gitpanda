@@ -13,6 +13,10 @@ notify = "8.2"
 smallvec = "1.16"
 anyhow = "1"
 
+[dev-dependencies]
+# Headless TestAppContext and #[gpui::test] for the UI tests.
+gpui = { version = "0.2.2", features = ["test-support"] }
+
 [profile.release]
 opt-level = 3
 lto = "thin"

@@ -9,7 +9,7 @@ use super::diff::{DiffSource, file_diff};
 use super::ops::{Git, RebaseAction, rebase_range};
 use super::repo::{self, OpState};
 
-struct TempRepo(PathBuf);
+pub(crate) struct TempRepo(pub(crate) PathBuf);
 
 impl Drop for TempRepo {
     fn drop(&mut self) {
@@ -18,7 +18,7 @@ impl Drop for TempRepo {
 }
 
 impl TempRepo {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         static N: AtomicUsize = AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
             "gitpanda-test-{}-{}",
@@ -35,25 +35,25 @@ impl TempRepo {
         r
     }
 
-    fn git(&self, args: &[&str]) -> String {
+    pub(crate) fn git(&self, args: &[&str]) -> String {
         Git::new(&self.0).run(args).unwrap_or_else(|e| panic!("git {args:?}: {e}"))
     }
 
-    fn write(&self, path: &str, s: &str) {
+    pub(crate) fn write(&self, path: &str, s: &str) {
         std::fs::write(self.0.join(path), s).unwrap();
     }
 
-    fn read(&self, path: &str) -> String {
+    pub(crate) fn read(&self, path: &str) -> String {
         std::fs::read_to_string(self.0.join(path)).unwrap()
     }
 
-    fn commit(&self, path: &str, content: &str, msg: &str) {
+    pub(crate) fn commit(&self, path: &str, content: &str, msg: &str) {
         self.write(path, content);
         self.git(&["add", path]);
         self.git(&["commit", "-q", "-m", msg]);
     }
 
-    fn log(&self) -> Vec<String> {
+    pub(crate) fn log(&self) -> Vec<String> {
         self.git(&["log", "--format=%s"]).lines().map(str::to_string).collect()
     }
 }

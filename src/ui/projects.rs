@@ -449,3 +449,32 @@ impl GitPanda {
             .into_any_element()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repo_name_is_the_last_component() {
+        assert_eq!(repo_name(Path::new("/home/me/git/gitpanda")), "gitpanda");
+        assert_eq!(repo_name(Path::new("relative/dir")), "dir");
+        // No file name: fall back to the whole path.
+        assert_eq!(repo_name(Path::new("/")), "/");
+    }
+
+    #[test]
+    fn plurals() {
+        assert_eq!(plural(0, "file", "files"), "0 files");
+        assert_eq!(plural(1, "file", "files"), "1 file");
+        assert_eq!(plural(2, "change", "changes"), "2 changes");
+    }
+
+    #[test]
+    fn only_a_clean_repository_has_no_state_label() {
+        assert_eq!(state_label(OpState::Clean), "");
+        for s in [OpState::Merge, OpState::Rebase, OpState::CherryPick, OpState::Revert, OpState::Bisect, OpState::Other] {
+            assert!(!state_label(s).is_empty(), "{s:?}");
+        }
+        assert_eq!(state_label(OpState::Rebase), "rebasing");
+    }
+}

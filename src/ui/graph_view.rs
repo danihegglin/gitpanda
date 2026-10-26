@@ -397,3 +397,138 @@ fn paint_graph_row(
         window.paint_quad(fill(dot(2.), c(BG)).corner_radii(px(2.)));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use gpui::TestAppContext;
+
+    use super::super::test_support::*;
+    use super::*;
+
+    #[test]
+    fn lanes_are_centred_in_their_column() {
+        assert_eq!(lane_x(0), GRAPH_PAD + LANE_W / 2.);
+        assert_eq!(lane_x(3), GRAPH_PAD + 3. * LANE_W + LANE_W / 2.);
+    }
+
+    #[gpui::test]
+    fn graph_width_fits_the_lanes(cx: &mut TestAppContext) {
+        let r = three_commits();
+        let (view, cx) = open(&r, cx);
+        let width = |lanes, cx: &mut gpui::VisualTestContext| {
+            view.update(cx, |v, _| {
+                v.snap.as_mut().unwrap().graph_width = lanes;
+                v.graph_width()
+            })
+        };
+        // Never narrower than the header.
+        assert_eq!(width(1, cx), 60.);
+        assert_eq!(width(5, cx), GRAPH_PAD * 2. + 5. * LANE_W);
+        // Very wide graphs are cut off.
+        assert_eq!(width(40, cx), width(MAX_VISIBLE_LANES, cx));
+    }
+
+    #[gpui::test]
+    fn wip_menu(cx: &mut TestAppContext) {
+        let r = three_commits();
+        r.write("one.txt", "dirty\n");
+        let (view, cx) = open(&r, cx);
+        let items = view.read_with(cx, |v, _| labels(&v.commit_menu(wip_oid())));
+        assert_eq!(items, ["Stage all changes", "Unstage all changes", "Stash changes…", "—", "Discard all changes…"]);
+
+        let items = view.read_with(cx, |v, _| v.commit_menu(wip_oid()));
+        click(&view, items, "Stage all changes", cx);
+        view.read_with(cx, |v, _| {
+            let st = &v.snap.as_ref().unwrap().status;
+            assert!(st.unstaged.is_empty());
+            assert_eq!(st.staged.len(), 1);
+        });
+    }
+
+    #[gpui::test]
+    fn commit_menu(cx: &mut TestAppContext) {
+        let r = three_commits();
+        let (view, cx) = open(&r, cx);
+        let two = oid_of(&view, "two", cx);
+        let items = view.read_with(cx, |v, _| labels(&v.commit_menu(two)));
+        let short = &two.to_string()[..7];
+        assert_eq!(
+            items,
+            [
+                "Create branch here…",
+                "Create tag here…",
+                "Checkout this commit (detached)",
+                "—",
+                "Cherry-pick onto current",
+                "Revert commit",
+                "Reword…",
+                "Interactive rebase main from here…",
+                "Squash into parent",
+                "Drop commit…",
+                "—",
+                "Reset main here — soft",
+                "Reset main here — mixed",
+                "Reset main here — hard",
+                "—",
+                &format!("Copy SHA ({short})"),
+            ]
+        );
+    }
+
+    #[gpui::test]
+    fn multi_selection_adds_squash_and_drop(cx: &mut TestAppContext) {
+        let r = three_commits();
+        let (view, cx) = open(&r, cx);
+        cx.simulate_keystrokes("shift-down shift-down");
+        let three = oid_of(&view, "three", cx);
+        let items = view.read_with(cx, |v, _| labels(&v.commit_menu(three)));
+        assert_eq!(items[..3], ["Squash 3 commits…", "Drop 3 commits…", "—"]);
+    }
+
+    #[gpui::test]
+    fn squash_into_parent(cx: &mut TestAppContext) {
+        let r = three_commits();
+        let (view, cx) = open(&r, cx);
+        let (one, three) = (oid_of(&view, "one", cx), oid_of(&view, "three", cx));
+        // The root commit has nothing to squash into.
+        click(&view, view.read_with(cx, |v, _| v.commit_menu(one)), "Squash into parent", cx);
+        assert_eq!(toasts(&view, cx).last().unwrap(), "The root commit has no parent to squash into");
+
+        click(&view, view.read_with(cx, |v, _| v.commit_menu(three)), "Squash into parent", cx);
+        view.read_with(cx, |v, _| match &v.modal {
+            Some(super::super::app::Modal::Rebase(ed)) => {
+                let actions: Vec<_> = ed.steps.iter().map(|s| s.action).collect();
+                assert_eq!(actions, [RebaseAction::Pick, RebaseAction::Squash]);
+            }
+            _ => panic!("expected the rebase editor"),
+        });
+    }
+
+    #[gpui::test]
+    fn create_tag_from_the_commit_menu(cx: &mut TestAppContext) {
+        let r = three_commits();
+        let (view, cx) = open(&r, cx);
+        let two = oid_of(&view, "two", cx);
+        click(&view, view.read_with(cx, |v, _| v.commit_menu(two)), "Create tag here…", cx);
+        cx.simulate_input("v0.1");
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(r.git(&["rev-parse", "v0.1"]).trim(), two.to_string());
+        assert_eq!(view.read_with(cx, |v, _| v.snap.as_ref().unwrap().tags.len()), 1);
+    }
+
+    #[gpui::test]
+    fn double_click_checks_out_a_local_branch(cx: &mut TestAppContext) {
+        let r = three_commits();
+        r.git(&["branch", "topic", "HEAD~1"]);
+        let (view, cx) = open(&r, cx);
+        let (one, two) = (oid_of(&view, "one", cx), oid_of(&view, "two", cx));
+        // Without a branch there's nothing to check out.
+        view.update(cx, |v, cx| v.double_click_commit(one, cx));
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |v, _| v.head_branch()).as_deref(), Some("main"));
+        view.update(cx, |v, cx| v.double_click_commit(two, cx));
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |v, _| v.head_branch()).as_deref(), Some("topic"));
+    }
+}
