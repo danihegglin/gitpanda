@@ -254,7 +254,9 @@ fn hostile_ref_names_are_never_read_as_options() {
     let r = TempRepo::new();
     r.commit("f.txt", "a\n", "base");
     let marker = r.0.join("PWNED");
-    let evil = format!("--exec=touch${{IFS}}{}", marker.display());
+    // Rebase runs `exec` lines at the top of the work tree. A relative path
+    // keeps the name valid on Windows, where a ref can't hold `:` or `\`.
+    let evil = "--exec=touch${IFS}PWNED".to_string();
     r.git(&["update-ref", &format!("refs/heads/{evil}"), "HEAD"]);
     r.git(&["update-ref", "refs/tags/--force", "HEAD"]);
     r.commit("f.txt", "b\n", "local");
