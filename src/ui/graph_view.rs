@@ -277,7 +277,7 @@ impl GitPanda {
             let s = sha.clone();
             add(&mut items, "Checkout this commit (detached)", false, action(move |this, _, cx| {
                 let s = s.clone();
-                this.run("Checking out", move |g| g.checkout(&s).map(|_| format!("HEAD detached at {}", &s[..7])), cx)
+                this.run("Checking out", move |g| g.checkout_detached(oid).map(|_| format!("HEAD detached at {}", &s[..7])), cx)
             }));
         }
         items.push(MenuItem::Separator);

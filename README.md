@@ -229,7 +229,8 @@ The end-to-end tests cover line staging, hunk discard, squash, reword, fixup,
 merge conflict resolution, branch rename and rename detection.
 
 For UI work, `GITPANDA_SCRIPT` drives the live app and screenshots it (macOS;
-a process may always capture its own window):
+a process may always capture its own window). Debug builds always read it;
+release builds only with `--features dev-script`:
 
 ```sh
 GITPANDA_SCRIPT="wait 1000; call select 3; shot /tmp/a.png; quit" cargo run -- .

@@ -12,6 +12,10 @@ on:
     paths: [".github/workflows/release.yml", "packaging/**", "Cargo.toml", "Cargo.lock"]
   workflow_dispatch:
 
+# Only the release job below gets to write.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
@@ -65,8 +69,12 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev \
             libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev \
             file desktop-file-utils rpm
-          # cargo-zigbuild runs zig from this package.
-          pip3 install --user ziglang==0.17.0
+          # cargo-zigbuild runs zig from this package; it links every Linux
+          # binary, so only these exact wheels are accepted.
+          printf '%s\n' 'ziglang==0.17.0 \' \
+            '  --hash=sha256:97079827064a7492cce5541ceb438ae8003ce1e54e399676da2d62fb7a5dc08b \' \
+            '  --hash=sha256:d2804f94f54f7fcf8169f4b212a619ad688a4e2e6592e976f0cf2e58e2cd8af3' > zig-requirements.txt
+          pip3 install --user --require-hashes -r zig-requirements.txt
 
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch
         with:
@@ -109,10 +117,18 @@ jobs:
       - name: Package .rpm (Fedora, RHEL, openSUSE, ...)
         run: cargo generate-rpm --target "$TARGET" --auto-req find-requires --payload-compress gzip --output dist/
 
+      # A fixed linuxdeploy release, checked against the hashes of the files
+      # as first downloaded: its output (the bundled libraries) ships to users.
       - name: Package AppImage
+        env:
+          LINUXDEPLOY: 1-alpha-20251107-1
+          LINUXDEPLOY_SHA256_x86_64: c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d
+          LINUXDEPLOY_SHA256_aarch64: 620095110d693282b8ebeb244a95b5e911cf8f65f76c88b4b47d16ae6346fcff
         run: |
           curl -fsSL -o linuxdeploy \
-            "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-$ARCH.AppImage"
+            "https://github.com/linuxdeploy/linuxdeploy/releases/download/$LINUXDEPLOY/linuxdeploy-$ARCH.AppImage"
+          sha="LINUXDEPLOY_SHA256_$ARCH"
+          echo "${!sha}  linuxdeploy" | sha256sum -c -
           chmod +x linuxdeploy
           # Graphics and input stacks must come from the host, never the bundle
           # (libbsd and libmd only come in through the host's libXdmcp).

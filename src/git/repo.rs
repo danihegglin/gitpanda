@@ -160,6 +160,25 @@ pub fn discover(path: &Path) -> Result<PathBuf> {
         .context("bare repositories are not supported")
 }
 
+/// Extra `git -c` arguments for commands run in `workdir`.
+///
+/// `core.fsmonitor` names a command that `git status` and most other
+/// commands run. Set in a repository's own `.git/config` (one that came in a
+/// zip or on a shared drive, say), it would run just because the repository
+/// was opened. Only the boolean form (git's built-in daemon) is honoured there;
+/// a command set in the user's global config is theirs and still runs.
+pub fn git_overrides(workdir: &Path) -> &'static [&'static str] {
+    const NO_FSMONITOR: &[&str] = &["-c", "core.fsmonitor=false"];
+    let local_command = || -> Option<bool> {
+        let cfg = Repository::open(workdir).ok()?.config().ok()?;
+        let levels = [git2::ConfigLevel::Local, git2::ConfigLevel::Worktree];
+        Some(levels.iter().any(|&l| {
+            cfg.open_level(l).is_ok_and(|c| c.get_entry("core.fsmonitor").is_ok() && c.get_bool("core.fsmonitor").is_err())
+        }))
+    };
+    if local_command().unwrap_or(false) { NO_FSMONITOR } else { &[] }
+}
+
 /// Working tree status from `git status`, which checks files on several
 /// threads (and uses fsmonitor or the untracked cache when configured):
 /// ~4× faster than libgit2 on the Linux kernel's 96k files.
@@ -168,6 +187,7 @@ pub fn status(workdir: &Path) -> Result<WorkStatus> {
         .current_dir(workdir)
         // Never refresh the index as a side effect: that would take its
         // lock under the user's feet and wake our own file watcher.
+        .args(git_overrides(workdir))
         .args(["--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignore-submodules=all"])
         .stdin(std::process::Stdio::null())
         .output()

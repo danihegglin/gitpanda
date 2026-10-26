@@ -248,3 +248,56 @@ fn history_keeps_children_above_parents_despite_clock_skew() {
     let order: Vec<_> = s.commits.iter().map(|c| c.summary.to_string()).collect();
     assert_eq!(order, ["child", "skewed parent", "base"]);
 }
+
+#[test]
+fn hostile_ref_names_are_never_read_as_options() {
+    let r = TempRepo::new();
+    r.commit("f.txt", "a\n", "base");
+    let marker = r.0.join("PWNED");
+    let evil = format!("--exec=touch${{IFS}}{}", marker.display());
+    r.git(&["update-ref", &format!("refs/heads/{evil}"), "HEAD"]);
+    r.git(&["update-ref", "refs/tags/--force", "HEAD"]);
+    r.commit("f.txt", "b\n", "local");
+    let g = Git::new(&r.0);
+
+    for res in [g.rebase_onto(&evil), g.merge(&evil), g.checkout(&evil), g.create_branch("x", &evil, true)] {
+        assert!(res.unwrap_err().to_string().contains("would be read as an option"));
+    }
+    assert!(!marker.exists(), "a ref name ran a command");
+
+    // Checking out the `--force` tag detaches HEAD and keeps local edits.
+    r.write("f.txt", "edited\n");
+    let tag = repo::load(&r.0, None).unwrap().tags.iter().find(|t| t.0.as_ref() == "--force").unwrap().1;
+    assert!(g.checkout_detached(tag).is_err(), "would overwrite the edit");
+    assert_eq!(r.read("f.txt"), "edited\n");
+
+    // Hostile refs can still be cleaned up.
+    g.delete_tag("--force").unwrap();
+    g.delete_branch(&evil).unwrap();
+}
+
+#[test]
+fn repo_local_fsmonitor_command_does_not_run() {
+    let r = TempRepo::new();
+    r.commit("f.txt", "a\n", "base");
+    let marker = r.0.join("FSMONITOR_RAN");
+    r.git(&["config", "core.fsmonitor", &format!("touch '{}'; false", marker.display())]);
+    repo::status(&r.0).unwrap();
+    Git::new(&r.0).stage_all().unwrap();
+    assert!(!marker.exists());
+}
+
+#[test]
+fn stage_untracked_file_with_newline_in_name() {
+    if cfg!(windows) {
+        return;
+    }
+    let r = TempRepo::new();
+    r.commit("other.txt", "keep\n", "base");
+    r.write("x\n+++ y.txt", "new\n");
+    let f = file_diff(&git2::Repository::open(&r.0).unwrap(), &DiffSource::Unstaged, "x\n+++ y.txt").unwrap().unwrap();
+    Git::new(&r.0).apply_hunk(&f, &DiffSource::Unstaged, 0, None, false).unwrap();
+    let s = repo::status(&r.0).unwrap();
+    assert_eq!(s.staged.len(), 1);
+    assert_eq!(s.staged[0].path.as_ref(), "x\n+++ y.txt");
+}

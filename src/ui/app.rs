@@ -621,7 +621,18 @@ impl GitPanda {
 
     pub fn open_conflict(&mut self, path: String, cx: &mut Context<Self>) {
         let Some(dir) = &self.workdir else { return };
-        match std::fs::read_to_string(dir.join(&path)) {
+        let full = dir.join(&path);
+        let checked = std::fs::symlink_metadata(&full).and_then(|m| {
+            // Saving writes back here, so only plain files of a sane size.
+            if !m.is_file() {
+                Err(std::io::Error::other("not a regular file"))
+            } else if m.len() > crate::git::diff::MAX_FILE_SIZE {
+                Err(std::io::Error::other("file is too large to resolve here"))
+            } else {
+                Ok(())
+            }
+        });
+        match checked.and_then(|_| std::fs::read_to_string(&full)) {
             Ok(content) => {
                 self.file_view = None;
                 self.conflict = Some(ConflictView::new(path, &content));
