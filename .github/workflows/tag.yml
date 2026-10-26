@@ -1,0 +1,46 @@
+name: Tag release
+
+# When main's Cargo.toml has a version with no `vX.Y.Z` tag yet, tag that
+# commit and start release.yml on the tag. A tag pushed with GITHUB_TOKEN
+# doesn't trigger other workflows, but a workflow_dispatch does, and a
+# dispatch on a tag ref runs release.yml exactly as a tag push would.
+# Plain `gh` calls only, so there are no third-party actions to pin.
+on:
+  push:
+    branches: [main]
+    paths: [Cargo.toml]
+  workflow_dispatch:
+
+concurrency:
+  group: tag-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write # create the tag
+  actions: write # dispatch release.yml
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Tag and release
+        run: |
+          version=$(gh api "repos/$GH_REPO/contents/Cargo.toml?ref=$GITHUB_SHA" \
+            -H "Accept: application/vnd.github.raw" \
+            | sed -n 's/^version = "\(.*\)"/\1/p' | head -n1)
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Cargo.toml version '$version' isn't X.Y.Z"
+            exit 1
+          fi
+          tag=v$version
+          if gh api "repos/$GH_REPO/git/ref/tags/$tag" --silent 2>/dev/null; then
+            echo "$tag already exists, nothing to do"
+            exit 0
+          fi
+          gh api "repos/$GH_REPO/git/refs" -f ref="refs/tags/$tag" -f sha="$GITHUB_SHA" --silent
+          echo "tagged $GITHUB_SHA as $tag"
+          gh workflow run release.yml --ref "$tag"
+          echo "::notice::tagged $tag and started the release"

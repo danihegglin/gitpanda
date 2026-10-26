@@ -440,3 +440,140 @@ fn short_label(l: &str) -> String {
     let l = if l.is_empty() { "?" } else { l };
     if l.chars().count() > 28 { format!("{}…", l.chars().take(27).collect::<String>()) } else { l.to_string() }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tabs_become_four_spaces() {
+        assert_eq!(expand_tabs("a\tb"), SharedString::from("a    b"));
+        assert_eq!(expand_tabs("\t\tx"), SharedString::from("        x"));
+        assert_eq!(expand_tabs("plain"), SharedString::from("plain"));
+    }
+
+    #[test]
+    fn long_conflict_labels_are_shortened() {
+        assert_eq!(short_label(""), "?");
+        assert_eq!(short_label("HEAD"), "HEAD");
+        let exact = "x".repeat(28);
+        assert_eq!(short_label(&exact), exact);
+        let long = "a1b2c3d (A rather long commit message)";
+        let short = short_label(long);
+        assert_eq!(short.chars().count(), 28);
+        assert!(short.ends_with('…'));
+        assert!(long.starts_with(short.trim_end_matches('…')));
+        // Counts characters, not bytes.
+        assert_eq!(short_label(&"é".repeat(28)), "é".repeat(28));
+        assert_eq!(short_label(&"é".repeat(30)).chars().count(), 28);
+    }
+
+    #[test]
+    fn pick_labels() {
+        assert_eq!(pick_label(Pick::Ours), "ours");
+        assert_eq!(pick_label(Pick::Theirs), "theirs");
+        assert_eq!(pick_label(Pick::OursThenTheirs), "both, ours first");
+        assert_eq!(pick_label(Pick::TheirsThenOurs), "both, theirs first");
+    }
+}
+
+#[cfg(test)]
+mod view_tests {
+    use gpui::TestAppContext;
+
+    use crate::git::diff::FileStatus;
+
+    use super::super::test_support::*;
+    use super::*;
+
+    /// Opens the unstaged diff of `f.txt`: one hunk of context, deletions
+    /// and additions.
+    fn diff_open(cx: &mut TestAppContext) -> (TempRepo, gpui::Entity<GitPanda>, &mut gpui::VisualTestContext) {
+        let r = TempRepo::new();
+        r.commit("f.txt", "a\nb\nc\nd\n", "base");
+        r.write("f.txt", "a\nB\nc\nD\ne\n");
+        let (view, cx) = open(&r, cx);
+        view.update(cx, |v, cx| v.open_file(DiffSource::Unstaged, "f.txt".into(), FileStatus::Modified, cx));
+        cx.run_until_parked();
+        (r, view, cx)
+    }
+
+    fn kinds(view: &gpui::Entity<GitPanda>, cx: &mut gpui::VisualTestContext) -> Vec<LineKind> {
+        view.read_with(cx, |v, _| v.file_view.as_ref().unwrap().diff.as_ref().unwrap().hunks[0].lines.iter().map(|l| l.kind).collect())
+    }
+
+    fn selected(view: &gpui::Entity<GitPanda>, cx: &mut gpui::VisualTestContext) -> Vec<usize> {
+        let mut s: Vec<usize> = view.read_with(cx, |v, _| v.file_view.as_ref().unwrap().selected_in(0).into_iter().collect());
+        s.sort();
+        s
+    }
+
+    #[gpui::test]
+    fn clicking_lines_toggles_them(cx: &mut TestAppContext) {
+        let (_r, view, cx) = diff_open(cx);
+        use LineKind::*;
+        assert_eq!(kinds(&view, cx), [Context, Del, Add, Context, Del, Add, Add]);
+        view.update(cx, |v, cx| v.toggle_line(0, 1, false, cx));
+        view.update(cx, |v, cx| v.toggle_line(0, 2, false, cx));
+        assert_eq!(selected(&view, cx), [1, 2]);
+        view.update(cx, |v, cx| v.toggle_line(0, 1, false, cx));
+        assert_eq!(selected(&view, cx), [2]);
+    }
+
+    #[gpui::test]
+    fn shift_click_selects_changed_lines_in_between(cx: &mut TestAppContext) {
+        let (_r, view, cx) = diff_open(cx);
+        view.update(cx, |v, cx| v.toggle_line(0, 1, false, cx));
+        view.update(cx, |v, cx| v.toggle_line(0, 5, true, cx));
+        // Line 3 is context, so it's left out.
+        assert_eq!(selected(&view, cx), [1, 2, 4, 5]);
+    }
+
+    #[gpui::test]
+    fn stage_selected_lines(cx: &mut TestAppContext) {
+        let (r, view, cx) = diff_open(cx);
+        // b → B only.
+        view.update(cx, |v, cx| v.toggle_line(0, 1, false, cx));
+        view.update(cx, |v, cx| v.toggle_line(0, 2, true, cx));
+        view.update(cx, |v, cx| v.hunk_op(0, true, false, cx));
+        cx.run_until_parked();
+        assert_eq!(r.git(&["show", ":f.txt"]), "a\nB\nc\nd\n");
+        assert_eq!(r.read("f.txt"), "a\nB\nc\nD\ne\n");
+        view.read_with(cx, |v, _| {
+            let fv = v.file_view.as_ref().unwrap();
+            assert!(fv.selected.is_empty());
+            // The diff reloads with what's left.
+            assert_eq!(fv.diff.as_ref().unwrap().hunks[0].lines.iter().filter(|l| l.kind != LineKind::Context).count(), 3);
+        });
+        assert_eq!(toasts(&view, cx).last().unwrap(), "Staged lines");
+    }
+
+    #[gpui::test]
+    fn discarding_a_hunk_asks_first(cx: &mut TestAppContext) {
+        let (r, view, cx) = diff_open(cx);
+        view.update(cx, |v, cx| v.hunk_op(0, false, true, cx));
+        assert_eq!(r.read("f.txt"), "a\nB\nc\nD\ne\n");
+        view.read_with(cx, |v, _| match &v.modal {
+            Some(super::super::app::Modal::Confirm { title, .. }) => assert_eq!(title.as_ref(), "Discard this hunk?"),
+            _ => panic!("expected a confirmation"),
+        });
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert_eq!(r.read("f.txt"), "a\nb\nc\nd\n");
+        // Nothing left to show.
+        assert!(view.read_with(cx, |v, _| v.file_view.is_none()));
+    }
+
+    #[gpui::test]
+    fn a_file_without_changes_says_so(cx: &mut TestAppContext) {
+        let r = three_commits();
+        let (view, cx) = open(&r, cx);
+        view.update(cx, |v, cx| v.open_file(DiffSource::Unstaged, "one.txt".into(), FileStatus::Modified, cx));
+        cx.run_until_parked();
+        view.read_with(cx, |v, _| {
+            let fv = v.file_view.as_ref().unwrap();
+            assert!(fv.diff.is_none() && fv.rows.is_empty());
+            assert_eq!(fv.error.as_ref().map(|e| e.as_ref()), Some("No changes"));
+        });
+    }
+}

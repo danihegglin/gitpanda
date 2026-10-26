@@ -31,7 +31,7 @@ pub fn action(f: impl Fn(&mut GitPanda, &mut Window, &mut Context<GitPanda>) + '
     Rc::new(f)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToastKind {
     Info,
     Success,
@@ -80,7 +80,7 @@ pub struct RebaseEditor {
     pub editing: Option<(usize, Entity<TextInput>)>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiffRow {
     Hunk(usize),
     Line(usize, usize),
@@ -117,7 +117,7 @@ impl FileView {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConflictRow {
     Text(usize, usize),
     Header(usize),
@@ -236,6 +236,11 @@ pub struct GitPanda {
 
 impl GitPanda {
     pub fn new(path: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::with_workspace(path, Workspace::load(), window, cx)
+    }
+
+    /// Like `new`, with the projects given rather than read from disk.
+    pub fn with_workspace(path: Option<PathBuf>, workspace: Workspace, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let commit_input = cx.new(|cx| TextInput::new(cx, "Commit message (⌘⏎ to commit)", true));
         let fs_dirty = Arc::new(AtomicBool::new(false));
         // File system events only raise a flag; this loop coalesces them.
@@ -281,7 +286,7 @@ impl GitPanda {
             graph_scroll: UniformListScrollHandle::new(),
             diff_scroll: UniformListScrollHandle::new(),
             files_scroll: UniformListScrollHandle::new(),
-            workspace: Workspace::load(),
+            workspace,
             summaries: HashMap::new(),
             summary_gen: 0,
             drafts: HashMap::new(),
@@ -621,7 +626,18 @@ impl GitPanda {
 
     pub fn open_conflict(&mut self, path: String, cx: &mut Context<Self>) {
         let Some(dir) = &self.workdir else { return };
-        match std::fs::read_to_string(dir.join(&path)) {
+        let full = dir.join(&path);
+        let checked = std::fs::symlink_metadata(&full).and_then(|m| {
+            // Saving writes back here, so only plain files of a sane size.
+            if !m.is_file() {
+                Err(std::io::Error::other("not a regular file"))
+            } else if m.len() > crate::git::diff::MAX_FILE_SIZE {
+                Err(std::io::Error::other("file is too large to resolve here"))
+            } else {
+                Ok(())
+            }
+        });
+        match checked.and_then(|_| std::fs::read_to_string(&full)) {
             Ok(content) => {
                 self.file_view = None;
                 self.conflict = Some(ConflictView::new(path, &content));
@@ -723,7 +739,11 @@ impl GitPanda {
         let msg = self.commit_input.read(cx).text().trim().to_string();
         if msg.is_empty() {
             self.toast(ToastKind::Info, "Write a commit message first", cx);
-            window.focus(&self.commit_input.read(cx).focus);
+            // The message box is only on screen with the working tree
+            // selected; focusing it elsewhere would swallow the keyboard.
+            if self.selected == Some(wip_oid()) {
+                window.focus(&self.commit_input.read(cx).focus);
+            }
             return;
         }
         let staged = self.snap.as_ref().is_some_and(|s| !s.status.staged.is_empty());
@@ -1418,5 +1438,130 @@ impl GitPanda {
             _ => eprintln!("gitpanda: unknown call {name:?}"),
         }
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::git::diff::{DiffLine, Hunk, LineKind};
+
+    use super::*;
+
+    fn diff(hunk_lens: &[usize]) -> FileDiff {
+        let hunks = hunk_lens
+            .iter()
+            .map(|&n| Hunk {
+                header: "@@".into(),
+                old_start: 1,
+                new_start: 1,
+                lines: (0..n).map(|i| DiffLine { kind: LineKind::Add, old_no: None, new_no: Some(i as u32), text: "x".into() }).collect(),
+            })
+            .collect();
+        FileDiff { path: "f".into(), old_path: None, status: FileStatus::Modified, binary: false, hunks, additions: 0, deletions: 0 }
+    }
+
+    fn file_view() -> FileView {
+        FileView {
+            source: DiffSource::Unstaged,
+            path: "f".into(),
+            status: FileStatus::Modified,
+            diff: None,
+            rows: Vec::new(),
+            selected: HashSet::new(),
+            anchor: None,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn diff_rows_are_hunk_headers_then_lines() {
+        let mut fv = file_view();
+        fv.set_diff(Some(diff(&[2, 1])));
+        assert_eq!(fv.rows, [DiffRow::Hunk(0), DiffRow::Line(0, 0), DiffRow::Line(0, 1), DiffRow::Hunk(1), DiffRow::Line(1, 0)]);
+        fv.set_diff(None);
+        assert!(fv.rows.is_empty());
+        assert!(fv.diff.is_none());
+    }
+
+    #[test]
+    fn selection_survives_only_where_lines_still_exist() {
+        let mut fv = file_view();
+        fv.set_diff(Some(diff(&[3, 2])));
+        fv.selected.extend([(0, 0), (0, 2), (1, 1)]);
+        fv.set_diff(Some(diff(&[2, 2])));
+        assert_eq!(fv.selected, HashSet::from([(0, 0), (1, 1)]));
+        fv.set_diff(Some(diff(&[2])));
+        assert_eq!(fv.selected, HashSet::from([(0, 0)]));
+        fv.set_diff(None);
+        assert!(fv.selected.is_empty());
+    }
+
+    #[test]
+    fn selected_lines_by_hunk() {
+        let mut fv = file_view();
+        fv.selected.extend([(0, 1), (0, 4), (2, 0)]);
+        assert_eq!(fv.selected_in(0), HashSet::from([1, 4]));
+        assert_eq!(fv.selected_in(1), HashSet::new());
+        assert_eq!(fv.selected_in(2), HashSet::from([0]));
+    }
+
+    const CONFLICTED: &str = "\
+top
+<<<<<<< HEAD
+ours 1
+ours 2
+=======
+theirs 1
+>>>>>>> topic
+middle
+<<<<<<< HEAD
+=======
+theirs only
+>>>>>>> topic
+";
+
+    #[test]
+    fn conflict_rows_for_unresolved_file() {
+        use ConflictRow::*;
+        let cv = ConflictView::new("f".into(), CONFLICTED);
+        assert_eq!(cv.seg_of, [1, 3]);
+        assert_eq!(
+            cv.rows,
+            [Text(0, 0), Header(0), Ours(0, 0), Ours(0, 1), Sep(0), Theirs(0, 0), Text(2, 0), Header(1), Sep(1), Theirs(1, 0)]
+        );
+        assert_eq!(cv.resolved_line(0, 0), None);
+    }
+
+    #[test]
+    fn conflict_rows_after_picking() {
+        use ConflictRow::*;
+        let mut cv = ConflictView::new("f".into(), CONFLICTED);
+        cv.file.conflict_mut(0).unwrap().pick = Some(Pick::TheirsThenOurs);
+        cv.file.conflict_mut(1).unwrap().pick = Some(Pick::Ours);
+        cv.rebuild();
+        assert_eq!(
+            cv.rows,
+            [Text(0, 0), Header(0), Resolved(0, 0), Resolved(0, 1), Resolved(0, 2), Text(2, 0), Header(1), Empty(1)]
+        );
+        assert_eq!(cv.resolved_line(0, 0), Some("theirs 1"));
+        assert_eq!(cv.resolved_line(0, 1), Some("ours 1"));
+        assert_eq!(cv.resolved_line(0, 2), Some("ours 2"));
+        assert_eq!(cv.resolved_line(0, 3), None);
+        assert_eq!(cv.resolved_line(1, 0), None);
+        assert_eq!(cv.resolved_line(2, 0), None);
+    }
+
+    #[test]
+    fn resolved_lines_for_each_pick() {
+        let mut cv = ConflictView::new("f".into(), CONFLICTED);
+        let mut lines = |pick| {
+            cv.file.conflict_mut(0).unwrap().pick = Some(pick);
+            cv.rebuild();
+            (0..).map_while(|l| cv.resolved_line(0, l).map(str::to_string)).collect::<Vec<_>>()
+        };
+        assert_eq!(lines(Pick::Ours), ["ours 1", "ours 2"]);
+        assert_eq!(lines(Pick::Theirs), ["theirs 1"]);
+        assert_eq!(lines(Pick::OursThenTheirs), ["ours 1", "ours 2", "theirs 1"]);
+        assert_eq!(lines(Pick::TheirsThenOurs), ["theirs 1", "ours 1", "ours 2"]);
     }
 }

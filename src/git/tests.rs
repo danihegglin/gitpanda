@@ -9,7 +9,7 @@ use super::diff::{DiffSource, file_diff};
 use super::ops::{Git, RebaseAction, rebase_range};
 use super::repo::{self, OpState};
 
-struct TempRepo(PathBuf);
+pub(crate) struct TempRepo(pub(crate) PathBuf);
 
 impl Drop for TempRepo {
     fn drop(&mut self) {
@@ -18,7 +18,7 @@ impl Drop for TempRepo {
 }
 
 impl TempRepo {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         static N: AtomicUsize = AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
             "gitpanda-test-{}-{}",
@@ -35,25 +35,25 @@ impl TempRepo {
         r
     }
 
-    fn git(&self, args: &[&str]) -> String {
+    pub(crate) fn git(&self, args: &[&str]) -> String {
         Git::new(&self.0).run(args).unwrap_or_else(|e| panic!("git {args:?}: {e}"))
     }
 
-    fn write(&self, path: &str, s: &str) {
+    pub(crate) fn write(&self, path: &str, s: &str) {
         std::fs::write(self.0.join(path), s).unwrap();
     }
 
-    fn read(&self, path: &str) -> String {
+    pub(crate) fn read(&self, path: &str) -> String {
         std::fs::read_to_string(self.0.join(path)).unwrap()
     }
 
-    fn commit(&self, path: &str, content: &str, msg: &str) {
+    pub(crate) fn commit(&self, path: &str, content: &str, msg: &str) {
         self.write(path, content);
         self.git(&["add", path]);
         self.git(&["commit", "-q", "-m", msg]);
     }
 
-    fn log(&self) -> Vec<String> {
+    pub(crate) fn log(&self) -> Vec<String> {
         self.git(&["log", "--format=%s"]).lines().map(str::to_string).collect()
     }
 }
@@ -296,4 +296,59 @@ fn working_tree_is_preferred_over_its_git_dir() {
     let dir = repo::discover(&r.0.join(".git")).unwrap();
     assert!(!repo::load(&dir, None).unwrap().bare);
     assert_eq!(dir, repo::discover(&r.0).unwrap());
+}
+
+#[test]
+fn hostile_ref_names_are_never_read_as_options() {
+    let r = TempRepo::new();
+    r.commit("f.txt", "a\n", "base");
+    let marker = r.0.join("PWNED");
+    // Rebase runs `exec` lines at the top of the work tree. A relative path
+    // keeps the name valid on Windows, where a ref can't hold `:` or `\`.
+    let evil = "--exec=touch${IFS}PWNED".to_string();
+    r.git(&["update-ref", &format!("refs/heads/{evil}"), "HEAD"]);
+    r.git(&["update-ref", "refs/tags/--force", "HEAD"]);
+    r.commit("f.txt", "b\n", "local");
+    let g = Git::new(&r.0);
+
+    for res in [g.rebase_onto(&evil), g.merge(&evil), g.checkout(&evil), g.create_branch("x", &evil, true)] {
+        assert!(res.unwrap_err().to_string().contains("would be read as an option"));
+    }
+    assert!(!marker.exists(), "a ref name ran a command");
+
+    // Checking out the `--force` tag detaches HEAD and keeps local edits.
+    r.write("f.txt", "edited\n");
+    let tag = repo::load(&r.0, None).unwrap().tags.iter().find(|t| t.0.as_ref() == "--force").unwrap().1;
+    assert!(g.checkout_detached(tag).is_err(), "would overwrite the edit");
+    assert_eq!(r.read("f.txt"), "edited\n");
+
+    // Hostile refs can still be cleaned up.
+    g.delete_tag("--force").unwrap();
+    g.delete_branch(&evil).unwrap();
+}
+
+#[test]
+fn repo_local_fsmonitor_command_does_not_run() {
+    let r = TempRepo::new();
+    r.commit("f.txt", "a\n", "base");
+    let marker = r.0.join("FSMONITOR_RAN");
+    r.git(&["config", "core.fsmonitor", &format!("touch '{}'; false", marker.display())]);
+    repo::status(&r.0).unwrap();
+    Git::new(&r.0).stage_all().unwrap();
+    assert!(!marker.exists());
+}
+
+#[test]
+fn stage_untracked_file_with_newline_in_name() {
+    if cfg!(windows) {
+        return;
+    }
+    let r = TempRepo::new();
+    r.commit("other.txt", "keep\n", "base");
+    r.write("x\n+++ y.txt", "new\n");
+    let f = file_diff(&git2::Repository::open(&r.0).unwrap(), &DiffSource::Unstaged, "x\n+++ y.txt").unwrap().unwrap();
+    Git::new(&r.0).apply_hunk(&f, &DiffSource::Unstaged, 0, None, false).unwrap();
+    let s = repo::status(&r.0).unwrap();
+    assert_eq!(s.staged.len(), 1);
+    assert_eq!(s.staged[0].path.as_ref(), "x\n+++ y.txt");
 }

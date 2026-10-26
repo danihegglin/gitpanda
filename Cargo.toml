@@ -1,6 +1,6 @@
 [package]
 name = "gitpanda"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "A fast, good-looking git client built on gpui"
 license = "MIT"
@@ -12,6 +12,10 @@ git2 = { version = "0.20", default-features = false }
 notify = "8.2"
 smallvec = "1.16"
 anyhow = "1"
+
+[dev-dependencies]
+# Headless TestAppContext and #[gpui::test] for the UI tests.
+gpui = { version = "0.2.2", features = ["test-support"] }
 
 [profile.release]
 opt-level = 3
@@ -27,6 +31,9 @@ opt-level = 2
 # Metal toolchain. Build with --no-default-features to precompile them.
 default = ["runtime-shaders"]
 runtime-shaders = ["gpui/runtime_shaders"]
+# Lets release builds be driven by GITPANDA_SCRIPT (see src/debug.rs), as
+# docs/make-demo.py does. Debug builds always can.
+dev-script = []
 
 # Used only by the GITPANDA_SCRIPT self-screenshot hook; gpui already builds them.
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -94,9 +94,12 @@ pub enum DiffSource {
     Commit(Oid),
 }
 
+/// Files bigger than this are shown as binary instead of being diffed.
+pub const MAX_FILE_SIZE: u64 = 16 * 1024 * 1024;
+
 fn opts(path: Option<&str>) -> DiffOptions {
     let mut o = DiffOptions::new();
-    o.context_lines(3).ignore_submodules(true);
+    o.context_lines(3).ignore_submodules(true).max_size(MAX_FILE_SIZE as i64);
     if let Some(p) = path {
         o.pathspec(p).disable_pathspec_match(true);
     }
@@ -306,12 +309,13 @@ pub fn hunk_patch(
     if !any_change {
         return None;
     }
+    let (a, b) = (quote_path("a/", old_path), quote_path("b/", &file.path));
     let (old_hdr, new_hdr) = match file.status {
-        FileStatus::Added | FileStatus::Untracked => ("/dev/null".to_string(), format!("b/{}", file.path)),
-        FileStatus::Deleted => (format!("a/{old_path}"), "/dev/null".to_string()),
-        _ => (format!("a/{old_path}"), format!("b/{}", file.path)),
+        FileStatus::Added | FileStatus::Untracked => ("/dev/null".to_string(), b.clone()),
+        FileStatus::Deleted => (a.clone(), "/dev/null".to_string()),
+        _ => (a.clone(), b.clone()),
     };
-    let mut out = format!("diff --git a/{old_path} b/{}\n", file.path);
+    let mut out = format!("diff --git {a} {b}\n");
     match file.status {
         FileStatus::Added | FileStatus::Untracked => out.push_str("new file mode 100644\n"),
         FileStatus::Deleted => out.push_str("deleted file mode 100644\n"),
@@ -326,9 +330,39 @@ pub fn hunk_patch(
     Some(out)
 }
 
+/// `prefix` + `path` as a patch header names it: C-quoted, as git does, when
+/// it holds a quote, backslash or control character. Unquoted, a newline in a
+/// file name would start a new line of the patch.
+fn quote_path(prefix: &str, path: &str) -> String {
+    if !path.chars().any(|c| c == '"' || c == '\\' || c.is_ascii_control()) {
+        return format!("{prefix}{path}");
+    }
+    let mut out = String::from("\"");
+    out.push_str(prefix);
+    for c in path.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_ascii_control() => out.push_str(&format!("\\{:03o}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn header_paths_are_quoted_when_needed() {
+        assert_eq!(quote_path("a/", "src/main.rs"), "a/src/main.rs");
+        assert_eq!(quote_path("b/", "x\n+++ b/y"), "\"b/x\\n+++ b/y\"");
+        assert_eq!(quote_path("a/", "q\"\\\u{1}"), "\"a/q\\\"\\\\\\001\"");
+    }
 
     fn line(kind: LineKind, text: &str) -> DiffLine {
         DiffLine { kind, old_no: None, new_no: None, text: text.to_string().into() }

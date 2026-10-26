@@ -82,3 +82,49 @@ pub fn person(email: &str) -> u32 {
     let h = email.bytes().fold(5381u32, |h, b| h.wrapping_mul(33) ^ b as u32);
     PEOPLE[h as usize % PEOPLE.len()]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lanes_wrap_around() {
+        assert_eq!(lane(0), LANES[0]);
+        assert_eq!(lane(9), LANES[9]);
+        assert_eq!(lane(10), LANES[0]);
+        assert_eq!(lane(255), LANES[255 % LANES.len()]);
+    }
+
+    #[test]
+    fn alpha_packs_and_clamps_opacity() {
+        assert_eq!(alpha(0x7aa2f7, 1.0), rgba(0x7aa2f7ff));
+        assert_eq!(alpha(0x7aa2f7, 0.0), rgba(0x7aa2f700));
+        assert_eq!(alpha(0x7aa2f7, 0.5), rgba(0x7aa2f77f));
+        assert_eq!(alpha(0x7aa2f7, 2.0), alpha(0x7aa2f7, 1.0));
+        assert_eq!(alpha(0x7aa2f7, -1.0), alpha(0x7aa2f7, 0.0));
+    }
+
+    #[test]
+    fn warm_hues_get_a_blue_wash() {
+        for warm in [YELLOW, ORANGE, GREEN] {
+            assert_eq!(wash(warm), BLUE);
+            assert_eq!(tint(warm, 0.3), alpha(BLUE, 0.3));
+        }
+        for cool in [BLUE, MAGENTA, CYAN, RED] {
+            assert_eq!(wash(cool), cool);
+        }
+    }
+
+    #[test]
+    fn person_colour_is_stable_and_cool() {
+        assert_eq!(person("t@example.com"), person("t@example.com"));
+        let emails = ["a@x.org", "b@x.org", "c@x.org", "dani@example.com", ""];
+        for e in emails {
+            assert!(PEOPLE.contains(&person(e)), "{e}");
+        }
+        // Not everyone gets the same colour.
+        let mut seen: Vec<u32> = emails.iter().map(|e| person(e)).collect();
+        seen.dedup();
+        assert!(seen.len() > 1);
+    }
+}

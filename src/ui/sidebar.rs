@@ -14,7 +14,7 @@ use super::widgets::*;
 const ROW_H: f32 = 26.;
 pub const WIDTH: f32 = 250.;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Row {
     Header(&'static str, usize),
     Local(usize),
@@ -318,7 +318,7 @@ impl GitPanda {
             danger: false,
             action: action(move |this, _, cx| {
                 let n = n2.clone();
-                this.run("Checking out", move |g| g.checkout(&n).map(|_| format!("HEAD detached at {n}")), cx)
+                this.run("Checking out", move |g| g.checkout_detached(oid).map(|_| format!("HEAD detached at {n}")), cx)
             }),
         };
         let mut items: Vec<MenuItem> = (!self.bare()).then_some(checkout).into_iter().collect();
@@ -366,4 +366,144 @@ fn stash_menu(index: usize) -> Vec<MenuItem> {
             }),
         },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::TestAppContext;
+
+    use super::super::test_support::*;
+    use super::*;
+
+    #[gpui::test]
+    fn rows_list_each_section(cx: &mut TestAppContext) {
+        let r = three_commits();
+        r.git(&["branch", "topic"]);
+        r.git(&["tag", "v1"]);
+        r.write("one.txt", "dirty\n");
+        r.git(&["stash", "-q"]);
+        let (view, cx) = open(&r, cx);
+        let rows = view.read_with(cx, |v, _| v.sidebar_rows());
+        assert_eq!(
+            rows,
+            [
+                Row::Header("LOCAL", 2),
+                Row::Local(0),
+                Row::Local(1),
+                Row::Header("REMOTE", 0),
+                Row::Header("TAGS", 1),
+                Row::Tag(0),
+                Row::Header("STASHES", 1),
+                Row::Stash(0),
+            ]
+        );
+
+        // Collapsed sections keep their header and count.
+        let rows = view.update(cx, |v, _| {
+            v.collapsed.extend(["LOCAL", "STASHES"]);
+            v.sidebar_rows()
+        });
+        assert_eq!(rows, [Row::Header("LOCAL", 2), Row::Header("REMOTE", 0), Row::Header("TAGS", 1), Row::Tag(0), Row::Header("STASHES", 1)]);
+    }
+
+    #[gpui::test]
+    fn no_rows_without_a_repository(cx: &mut TestAppContext) {
+        let r = three_commits();
+        let (view, cx) = open(&r, cx);
+        let rows = view.update(cx, |v, cx| {
+            v.close_repo(cx);
+            v.sidebar_rows()
+        });
+        assert!(rows.is_empty());
+    }
+
+    #[gpui::test]
+    fn branch_menus(cx: &mut TestAppContext) {
+        let r = three_commits();
+        r.git(&["branch", "topic"]);
+        let (view, cx) = open(&r, cx);
+
+        let head = view.read_with(cx, |v, _| labels(&v.branch_menu("main", false)));
+        assert_eq!(
+            head,
+            ["Push", "Force push (with lease)", "Pull", "—", "Create branch from here…", "Rename…", "Copy name"]
+        );
+
+        let other = view.read_with(cx, |v, _| labels(&v.branch_menu("topic", false)));
+        assert_eq!(
+            other,
+            [
+                "Checkout topic",
+                "Merge topic into main",
+                "Rebase main onto topic",
+                "—",
+                "Create branch from here…",
+                "Rename…",
+                "Copy name",
+                "—",
+                "Delete topic…",
+            ]
+        );
+
+        // Remote branches can't be renamed, and deleting one says where.
+        let remote = view.read_with(cx, |v, _| labels(&v.branch_menu("origin/main", true)));
+        assert!(remote.contains(&"Checkout origin/main".to_string()));
+        assert!(!remote.contains(&"Rename…".to_string()));
+        assert_eq!(remote.last().unwrap(), "Delete origin/main on remote…");
+    }
+
+    #[gpui::test]
+    fn checkout_and_delete_from_the_branch_menu(cx: &mut TestAppContext) {
+        let r = three_commits();
+        r.git(&["branch", "topic"]);
+        let (view, cx) = open(&r, cx);
+
+        let items = view.read_with(cx, |v, _| v.branch_menu("topic", false));
+        click(&view, items, "Checkout topic", cx);
+        assert_eq!(view.read_with(cx, |v, _| v.head_branch()).as_deref(), Some("topic"));
+        assert_eq!(toasts(&view, cx).last().unwrap(), "Switched to topic");
+
+        // Deleting asks first.
+        let items = view.read_with(cx, |v, _| v.branch_menu("main", false));
+        click(&view, items, "Delete main…", cx);
+        assert!(r.git(&["branch", "--list", "main"]).contains("main"));
+        view.update_in(cx, |v, window, cx| v.submit_modal(window, cx));
+        cx.run_until_parked();
+        assert_eq!(r.git(&["branch", "--list", "main"]).trim(), "");
+        assert_eq!(view.read_with(cx, |v, _| v.snap.as_ref().unwrap().branches.len()), 1);
+    }
+
+    #[gpui::test]
+    fn copy_branch_name(cx: &mut TestAppContext) {
+        let r = three_commits();
+        let (view, cx) = open(&r, cx);
+        let items = view.read_with(cx, |v, _| v.branch_menu("main", false));
+        click(&view, items, "Copy name", cx);
+        assert_eq!(cx.read_from_clipboard().and_then(|c| c.text()).as_deref(), Some("main"));
+    }
+
+    #[gpui::test]
+    fn tag_and_stash_menus(cx: &mut TestAppContext) {
+        let r = three_commits();
+        r.git(&["tag", "v1"]);
+        r.write("one.txt", "dirty\n");
+        r.git(&["stash", "-q"]);
+        let (view, cx) = open(&r, cx);
+        let oid = view.read_with(cx, |v, _| v.snap.as_ref().unwrap().tags[0].1);
+        let tag = view.read_with(cx, |v, _| labels(&v.tag_menu("v1", oid)));
+        assert_eq!(tag, ["Checkout v1 (detached)", "Create branch here…", "—", "Delete tag v1"]);
+        assert_eq!(labels(&stash_menu(0)), ["Pop stash", "Apply stash", "—", "Drop stash…"]);
+
+        click(&view, stash_menu(0), "Pop stash", cx);
+        assert_eq!(r.read("one.txt"), "dirty\n");
+        view.read_with(cx, |v, _| {
+            let s = v.snap.as_ref().unwrap();
+            assert!(s.stashes.is_empty());
+            assert_eq!(s.status.unstaged.len(), 1);
+        });
+
+        let items = view.read_with(cx, |v, _| v.tag_menu("v1", oid));
+        click(&view, items, "Delete tag v1", cx);
+        assert_eq!(r.git(&["tag"]).trim(), "");
+    }
 }

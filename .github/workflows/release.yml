@@ -12,6 +12,10 @@ on:
     paths: [".github/workflows/release.yml", "packaging/**", "Cargo.toml", "Cargo.lock"]
   workflow_dispatch:
 
+# Only the release job below gets to write.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
@@ -23,7 +27,7 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - id: v
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
@@ -56,7 +60,7 @@ jobs:
       # the binary loads the target system's copies.
       RUSTFLAGS: -L native=/usr/lib/${{ matrix.arch }}-linux-gnu -C link-arg=-Wl,--allow-shlib-undefined
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install build dependencies
         run: |
@@ -65,12 +69,18 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev \
             libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev \
             file desktop-file-utils rpm
-          # cargo-zigbuild runs zig from this package.
-          pip3 install --user ziglang==0.17.0
+          # cargo-zigbuild runs zig from this package; it links every Linux
+          # binary, so only these exact wheels are accepted.
+          printf '%s\n' 'ziglang==0.17.0 \' \
+            '  --hash=sha256:97079827064a7492cce5541ceb438ae8003ce1e54e399676da2d62fb7a5dc08b \' \
+            '  --hash=sha256:d2804f94f54f7fcf8169f4b212a619ad688a4e2e6592e976f0cf2e58e2cd8af3' > zig-requirements.txt
+          pip3 install --user --require-hashes -r zig-requirements.txt
 
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
         with:
           tool: cargo-zigbuild,cargo-deb,cargo-generate-rpm
 
@@ -107,10 +117,18 @@ jobs:
       - name: Package .rpm (Fedora, RHEL, openSUSE, ...)
         run: cargo generate-rpm --target "$TARGET" --auto-req find-requires --payload-compress gzip --output dist/
 
+      # A fixed linuxdeploy release, checked against the hashes of the files
+      # as first downloaded: its output (the bundled libraries) ships to users.
       - name: Package AppImage
+        env:
+          LINUXDEPLOY: 1-alpha-20251107-1
+          LINUXDEPLOY_SHA256_x86_64: c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d
+          LINUXDEPLOY_SHA256_aarch64: 620095110d693282b8ebeb244a95b5e911cf8f65f76c88b4b47d16ae6346fcff
         run: |
           curl -fsSL -o linuxdeploy \
-            "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-$ARCH.AppImage"
+            "https://github.com/linuxdeploy/linuxdeploy/releases/download/$LINUXDEPLOY/linuxdeploy-$ARCH.AppImage"
+          sha="LINUXDEPLOY_SHA256_$ARCH"
+          echo "${!sha}  linuxdeploy" | sha256sum -c -
           chmod +x linuxdeploy
           # Graphics and input stacks must come from the host, never the bundle
           # (libbsd and libmd only come in through the host's libXdmcp).
@@ -130,7 +148,7 @@ jobs:
           "dist/gitpanda-$VERSION-$ARCH.AppImage" --appimage-extract-and-run --bench .
 
       - run: ls -l dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: linux-${{ matrix.arch }}
           path: dist/*
@@ -156,13 +174,14 @@ jobs:
               . /opt/rh/rh-git227/enable
           - { distro: Ubuntu 18.04, image: "ubuntu:18.04", install: "apt-get update && apt-get install -y ./dist/*.deb" }
           - { distro: Rocky Linux 8, image: "rockylinux/rockylinux:8", install: "dnf install -y ./dist/*.rpm" }
+          - { distro: Rocky Linux 9 (RHEL 9), image: "rockylinux/rockylinux:9", install: "dnf install -y ./dist/*.rpm" }
           - { distro: Ubuntu 22.04, image: "ubuntu:22.04", install: "apt-get update && apt-get install -y ./dist/*.deb" }
           - { distro: Ubuntu 24.04, image: "ubuntu:24.04", install: "apt-get update && apt-get install -y ./dist/*.deb" }
           - { distro: Debian 12, image: "debian:12", install: "apt-get update && apt-get install -y ./dist/*.deb" }
           - { distro: Fedora, image: "fedora:latest", install: "dnf install -y ./dist/*.rpm" }
           - { distro: openSUSE Tumbleweed, image: "opensuse/tumbleweed", install: "zypper --non-interactive install --allow-unsigned-rpm ./dist/*.rpm" }
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: linux-x86_64
           path: dist
@@ -184,8 +203,8 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: linux-x86_64
           path: artifacts
@@ -205,7 +224,7 @@ jobs:
           git init -q /tmp/repo
           git -C /tmp/repo -c user.name=ci -c user.email=ci@example.com commit -q --allow-empty -m init
           gitpanda --bench /tmp/repo
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: arch-x86_64
           path: dist/*
@@ -218,11 +237,12 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch
         with:
+          toolchain: stable
           targets: aarch64-apple-darwin,x86_64-apple-darwin
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Build
         run: |
@@ -261,7 +281,7 @@ jobs:
           tar czf "dist/$name.tar.gz" "$name"
           ls -l dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: macos-universal
           path: dist/*
@@ -280,11 +300,12 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ matrix.target }}
 
@@ -300,7 +321,7 @@ jobs:
           Compress-Archive -Path $name -DestinationPath "dist/$name.zip"
           Get-ChildItem dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows-${{ matrix.arch }}
           path: dist/*
@@ -314,12 +335,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
           merge-multiple: true
       - run: cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: dist/*
           generate_release_notes: true
