@@ -226,7 +226,7 @@ impl GitPanda {
 
     fn double_click_commit(&mut self, oid: Oid, cx: &mut Context<Self>) {
         let Some(snap) = &self.snap else { return };
-        if oid == wip_oid() {
+        if oid == wip_oid() || snap.bare {
             return;
         }
         let local = snap
@@ -258,8 +258,14 @@ impl GitPanda {
         }
         let sha = oid.to_string();
         let short = sha[..7].to_string();
+        let copy_sha = action(move |this, _, cx| {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(sha.clone()));
+            this.toast(ToastKind::Info, "Copied commit SHA", cx);
+        });
+        let sha = oid.to_string();
+        let bare = self.bare();
         let multi = self.selected_commits();
-        if multi.len() > 1 {
+        if multi.len() > 1 && !bare {
             add(&mut items, &format!("Squash {} commits…", multi.len()), false, action(|this, _, cx| this.squash_selected(cx)));
             add(&mut items, &format!("Drop {} commits…", multi.len()), true, action(|this, _, cx| this.confirm_drop(this.selected_commits(), cx)));
             items.push(MenuItem::Separator);
@@ -272,6 +278,12 @@ impl GitPanda {
         {
             let s = sha.clone();
             add(&mut items, "Create tag here…", false, action(move |this, w, cx| this.new_tag_at(s.clone(), w, cx)));
+        }
+        // Everything else checks out, rewrites or resets into a working tree.
+        if bare {
+            items.push(MenuItem::Separator);
+            add(&mut items, &format!("Copy SHA ({short})"), false, copy_sha);
+            return items;
         }
         {
             let s = sha.clone();
@@ -309,10 +321,7 @@ impl GitPanda {
             add(&mut items, &format!("Reset {branch} here — {mode}"), mode == "hard", action(move |this, _, cx| this.reset_to(oid, mode, cx)));
         }
         items.push(MenuItem::Separator);
-        add(&mut items, &format!("Copy SHA ({short})"), false, action(move |this, _, cx| {
-            cx.write_to_clipboard(gpui::ClipboardItem::new_string(sha.clone()));
-            this.toast(ToastKind::Info, "Copied commit SHA", cx);
-        }));
+        add(&mut items, &format!("Copy SHA ({short})"), false, copy_sha);
         items
     }
 }

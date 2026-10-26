@@ -250,6 +250,55 @@ fn history_keeps_children_above_parents_despite_clock_skew() {
 }
 
 #[test]
+fn bare_repository_has_history_refs_and_diffs_but_no_working_tree() {
+    let src = TempRepo::new();
+    src.commit("a.txt", "1\n", "first");
+    src.commit("a.txt", "2\n", "second");
+    src.git(&["tag", "v1"]);
+    let bare = TempRepo(src.0.with_extension("git"));
+    let _ = std::fs::remove_dir_all(&bare.0);
+    src.git(&["clone", "-q", "--bare", ".", bare.0.to_str().unwrap()]);
+
+    // Found from the repository or anywhere inside it.
+    let dir = repo::discover(&bare.0).unwrap();
+    assert_eq!(repo::discover(&bare.0.join("refs")).unwrap(), dir);
+    assert_eq!(dir.file_name(), bare.0.file_name());
+
+    let s = repo::load(&dir, None).unwrap();
+    assert!(s.bare);
+    assert!(s.status.is_clean());
+    let log: Vec<_> = s.commits.iter().map(|c| c.summary.to_string()).collect();
+    assert_eq!(log, ["second", "first"]);
+    assert_eq!(s.head.branch.as_ref().map(|b| b.as_ref()), Some("main"));
+    assert!(s.branches.iter().any(|b| b.name.as_ref() == "main" && b.is_head));
+    assert_eq!(s.tags.len(), 1);
+    assert_eq!(repo::summary(&dir).unwrap().changes, 0);
+
+    let head = s.head.oid.unwrap();
+    let d = repo::commit_detail(&dir, head).unwrap();
+    assert_eq!((d.files.len(), d.files[0].additions, d.files[0].deletions), (1, 1, 1));
+    let r = git2::Repository::open(&dir).unwrap();
+    assert!(file_diff(&r, &DiffSource::Commit(head), "a.txt").unwrap().is_some());
+
+    // Ref operations need no working tree.
+    let g = Git::new(&dir);
+    g.create_branch("topic", "HEAD~1", false).unwrap();
+    g.create_tag("v0", "topic").unwrap();
+    let s = repo::load(&dir, Some(s.history.clone())).unwrap();
+    assert!(s.branches.iter().any(|b| b.name.as_ref() == "topic"));
+    assert_eq!(s.tags.len(), 2);
+}
+
+#[test]
+fn working_tree_is_preferred_over_its_git_dir() {
+    let r = TempRepo::new();
+    r.commit("a.txt", "1\n", "first");
+    let dir = repo::discover(&r.0.join(".git")).unwrap();
+    assert!(!repo::load(&dir, None).unwrap().bare);
+    assert_eq!(dir, repo::discover(&r.0).unwrap());
+}
+
+#[test]
 fn hostile_ref_names_are_never_read_as_options() {
     let r = TempRepo::new();
     r.commit("f.txt", "a\n", "base");

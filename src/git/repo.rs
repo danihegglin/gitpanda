@@ -1,6 +1,7 @@
 //! A read-only snapshot of a repository, built on a background thread:
 //! refs and history with its graph layout from libgit2, working tree status
-//! from `git status` (see `status`).
+//! from `git status` (see `status`). Bare repositories have no working
+//! tree, so their snapshots carry an empty status and no `// WIP` row.
 
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::cmp::Reverse;
@@ -125,7 +126,9 @@ pub struct History {
 }
 
 pub struct Snapshot {
+    /// The working tree, or the git directory of a bare repository.
     pub workdir: PathBuf,
+    pub bare: bool,
     pub name: SharedString,
     pub head: Head,
     pub state: OpState,
@@ -151,13 +154,13 @@ pub fn wip_oid() -> Oid {
     Oid::zero()
 }
 
+/// The repository's working tree, or for a bare repository its git
+/// directory, which libgit2 and the git CLI open just the same.
 pub fn discover(path: &Path) -> Result<PathBuf> {
     let repo = Repository::discover(path)
         .with_context(|| format!("{} is not inside a git repository", path.display()))?;
     // Without the trailing slash libgit2 adds, so paths compare and print cleanly.
-    repo.workdir()
-        .map(|p| p.components().collect())
-        .context("bare repositories are not supported")
+    Ok(repo.workdir().unwrap_or(repo.path()).components().collect())
 }
 
 /// Extra `git -c` arguments for commands run in `workdir`.
@@ -326,6 +329,7 @@ impl Summary {
 
 pub fn summary(workdir: &Path) -> Result<Summary> {
     let repo = Repository::open(workdir)?;
+    let changes = if repo.is_bare() { 0 } else { status(workdir)?.changes() };
     let head = read_head(&repo);
     let (ahead, behind) = head
         .branch
@@ -337,17 +341,18 @@ pub fn summary(workdir: &Path) -> Result<Summary> {
             repo.graph_ahead_behind(local, up).ok()
         })
         .unwrap_or((0, 0));
-    Ok(Summary { changes: status(workdir)?.changes(), state: op_state(&repo), head, ahead, behind })
+    Ok(Summary { changes, state: op_state(&repo), head, ahead, behind })
 }
 
 pub fn load(workdir: &Path, prev: Option<Arc<History>>) -> Result<Snapshot> {
     let start = Instant::now();
+    let repo = Repository::open(workdir)?;
+    let bare = repo.is_bare();
     // Status runs in git while we read refs and walk history.
     let status = std::thread::spawn({
         let dir = workdir.to_path_buf();
-        move || status(&dir)
+        move || if bare { Ok(WorkStatus::default()) } else { status(&dir) }
     });
-    let repo = Repository::open(workdir)?;
     let name: SharedString = workdir
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -490,6 +495,7 @@ pub fn load(workdir: &Path, prev: Option<Arc<History>>) -> Result<Snapshot> {
 
     Ok(Snapshot {
         workdir: workdir.to_path_buf(),
+        bare,
         name,
         head,
         state,
