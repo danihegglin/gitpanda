@@ -156,6 +156,7 @@ jobs:
               . /opt/rh/rh-git227/enable
           - { distro: Ubuntu 18.04, image: "ubuntu:18.04", install: "apt-get update && apt-get install -y ./dist/*.deb" }
           - { distro: Rocky Linux 8, image: "rockylinux/rockylinux:8", install: "dnf install -y ./dist/*.rpm" }
+          - { distro: Rocky Linux 9 (RHEL 9), image: "rockylinux/rockylinux:9", install: "dnf install -y ./dist/*.rpm" }
           - { distro: Ubuntu 22.04, image: "ubuntu:22.04", install: "apt-get update && apt-get install -y ./dist/*.deb" }
           - { distro: Ubuntu 24.04, image: "ubuntu:24.04", install: "apt-get update && apt-get install -y ./dist/*.deb" }
           - { distro: Debian 12, image: "debian:12", install: "apt-get update && apt-get install -y ./dist/*.deb" }
