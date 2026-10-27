@@ -185,6 +185,15 @@ impl Workspace {
         }
     }
 
+    /// Moves the repository at `from` to position `to` in the active project.
+    pub fn move_repo(&mut self, from: usize, to: usize) {
+        let Some(p) = self.project_mut() else { return };
+        if from < p.repos.len() && to < p.repos.len() {
+            let r = p.repos.remove(from);
+            p.repos.insert(to, r);
+        }
+    }
+
     /// A project name not yet taken, based on `name`.
     pub fn unique_name(&self, name: &str, except: Option<usize>) -> String {
         let taken = |n: &str| self.projects.iter().enumerate().any(|(i, p)| Some(i) != except && p.name == n);
@@ -225,5 +234,17 @@ mod tests {
         assert_eq!(ws.project().unwrap().start(), Some(&PathBuf::from("/w/web")));
         assert_eq!(ws.unique_name("work", None), "work 2");
         assert_eq!(ws.unique_name("work", Some(1)), "work");
+    }
+
+    #[test]
+    fn moving_repos() {
+        let mut ws = Workspace::parse("[p]\n/a\n/b\n/c\n/d\n");
+        let order = |ws: &Workspace| ws.projects[0].repos.iter().map(|r| r.display().to_string()).collect::<Vec<_>>().join("");
+        ws.move_repo(0, 2);
+        assert_eq!(order(&ws), "/b/c/a/d");
+        ws.move_repo(3, 0);
+        assert_eq!(order(&ws), "/d/b/c/a");
+        ws.move_repo(1, 9);
+        assert_eq!(order(&ws), "/d/b/c/a");
     }
 }

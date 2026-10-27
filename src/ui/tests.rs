@@ -209,6 +209,35 @@ fn switching_repositories_keeps_unsent_messages(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn dragging_a_tab_reorders_the_project(cx: &mut TestAppContext) {
+    let (a, b, c) = (three_commits(), three_commits(), three_commits());
+    let (view, cx) = open(&a, cx);
+    for r in [&b, &c] {
+        view.update(cx, |v, cx| v.open_repo(&r.0, cx));
+        cx.run_until_parked();
+    }
+    let repos = |cx: &mut gpui::VisualTestContext| view.read_with(cx, |v, _| v.workspace.project().unwrap().repos.clone());
+    let before = repos(cx);
+    let open_dir = view.read_with(cx, |v, _| v.workdir.clone());
+    let drag = |from: &'static str, to: &'static str, cx: &mut gpui::VisualTestContext| {
+        let (from, to) = (cx.debug_bounds(from).unwrap().center(), cx.debug_bounds(to).unwrap().center());
+        let none = gpui::Modifiers::none();
+        cx.simulate_mouse_down(from, gpui::MouseButton::Left, none);
+        cx.simulate_mouse_move(to, gpui::MouseButton::Left, none);
+        cx.simulate_mouse_up(to, gpui::MouseButton::Left, none);
+        cx.run_until_parked();
+    };
+
+    // First onto last, then back to the front.
+    drag("repo-tab-0", "repo-tab-2", cx);
+    assert_eq!(repos(cx), [before[1].clone(), before[2].clone(), before[0].clone()]);
+    drag("repo-tab-2", "repo-tab-0", cx);
+    assert_eq!(repos(cx), before);
+    // Dragging doesn't count as clicking: the open repository stays open.
+    assert_eq!(view.read_with(cx, |v, _| v.workdir.clone()), open_dir);
+}
+
+#[gpui::test]
 fn toasts_are_capped_and_expire(cx: &mut TestAppContext) {
     let r = three_commits();
     let (view, cx) = open(&r, cx);
