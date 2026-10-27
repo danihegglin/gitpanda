@@ -23,6 +23,31 @@ fn repo_name(path: &Path) -> String {
     path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())
 }
 
+/// A repository tab being dragged to a new position.
+#[derive(Clone)]
+struct DraggedTab {
+    from: usize,
+    name: SharedString,
+}
+
+impl Render for DraggedTab {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .items_center()
+            .h(px(28.))
+            .px(px(10.))
+            .rounded(px(6.))
+            .border_1()
+            .border_color(c(BORDER_HI))
+            .bg(c(BG))
+            .opacity(0.85)
+            .text_color(c(FG))
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .child(self.name.clone())
+    }
+}
+
 fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
@@ -399,9 +424,11 @@ impl GitPanda {
         let error = summary.and_then(|s| s.as_ref().err()).cloned();
         let p = path.to_path_buf();
         let p2 = path.to_path_buf();
+        let dragged = DraggedTab { from: i, name: repo_name(path).into() };
 
         div()
             .id(("repo-tab", i))
+            .debug_selector(move || format!("repo-tab-{i}"))
             .flex()
             .flex_none()
             .items_center()
@@ -438,6 +465,20 @@ impl GitPanda {
             .children(track.filter(|t| !t.is_empty()).map(|t| div().text_size(px(11.)).text_color(c(CYAN)).child(t)))
             .children(error.map(|e| div().text_size(px(11.)).text_color(c(RED)).child(e)))
             .on_click(cx.listener(move |this, _, _, cx| this.open_repo(&p, cx)))
+            .on_drag(dragged, |d, _, _, cx| cx.new(|_| d.clone()))
+            // Mark the side the dragged tab will land on.
+            .drag_over::<DraggedTab>(move |s, d, _, _| match d.from.cmp(&i) {
+                std::cmp::Ordering::Greater => s.border_l_2().border_color(c(CYAN)),
+                std::cmp::Ordering::Less => s.border_r_2().border_color(c(CYAN)),
+                std::cmp::Ordering::Equal => s,
+            })
+            .on_drop(cx.listener(move |this, d: &DraggedTab, _, cx| {
+                if d.from != i {
+                    this.workspace.move_repo(d.from, i);
+                    this.save_workspace(cx);
+                    cx.notify();
+                }
+            }))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
