@@ -467,7 +467,7 @@ pub struct RebaseStep {
 fn remote_branch_parts(dir: &Path, remote_branch: &str) -> Option<(String, String)> {
     let repo = Repository::open(dir).ok()?;
     let remote = repo.branch_remote_name(&format!("refs/remotes/{remote_branch}")).ok()?;
-    let remote = remote.as_str()?.to_string();
+    let remote = remote.as_str().ok()?.to_string();
     let branch = remote_branch.strip_prefix(&remote)?.strip_prefix('/')?.to_string();
     Some((remote, branch))
 }
@@ -486,7 +486,7 @@ pub fn rebase_range(dir: &Path, oldest: Oid) -> Result<(Option<Oid>, Vec<RebaseS
         out.push(RebaseStep {
             oid: c.id(),
             short: c.id().to_string()[..7].to_string(),
-            summary: c.summary().unwrap_or("").to_string(),
+            summary: c.summary().ok().flatten().unwrap_or("").to_string(),
             message: None,
             action: RebaseAction::Pick,
         });
