@@ -2,7 +2,7 @@
 # CI fills in pkgver, _arch and the tarball; to build by hand, put
 # gitpanda-<pkgver>-linux-<arch>.tar.gz next to this file and run makepkg.
 pkgname=gitpanda-bin
-pkgver=0.1.1
+pkgver=0.1.2
 pkgrel=1
 _arch=x86_64
 pkgdesc="A fast, good-looking git client built on gpui"
