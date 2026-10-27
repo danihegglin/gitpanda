@@ -1,0 +1,81 @@
+name: Release on merge
+
+# Every push to main is released. If main's Cargo.toml version is already
+# tagged on an older commit, bump the patch version (Cargo.toml, Cargo.lock,
+# PKGBUILD), commit that to main, then tag it; a version a PR bumped by hand
+# is tagged as is. Then start release.yml on the tag: a tag pushed with
+# GITHUB_TOKEN doesn't trigger other workflows, but a workflow_dispatch does,
+# and a dispatch on a tag ref runs release.yml exactly as a tag push would.
+#
+# No loop: the bump commit is pushed with GITHUB_TOKEN, which starts no
+# workflows, and the actor check below skips it should that ever change.
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**"]
+  workflow_dispatch:
+
+concurrency:
+  group: tag-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write # push the bump commit and the tag
+  actions: write # dispatch release.yml
+
+jobs:
+  release:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      # Latest main, not the pushed commit: a run queued behind another one
+      # releases everything merged in the meantime.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Bump, tag and release
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          if ! [[ "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "::error::Cargo.toml version '$version' isn't X.Y.Z"
+            exit 1
+          fi
+
+          if tagged=$(git rev-parse -q --verify "refs/tags/v$version^{commit}"); then
+            if [[ "$tagged" == "$(git rev-parse HEAD)" ]]; then
+              echo "main is already released as v$version, nothing to do"
+              exit 0
+            fi
+            old=$version
+            version=${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))
+            sed -i "0,/^version = \"$old\"/s//version = \"$version\"/" Cargo.toml
+            awk -v old="$old" -v new="$version" '
+              prev == "name = \"gitpanda\"" && $0 == "version = \"" old "\"" { $0 = "version = \"" new "\"" }
+              { print; prev = $0 }' Cargo.lock > Cargo.lock.new && mv Cargo.lock.new Cargo.lock
+            sed -i "s/^pkgver=.*/pkgver=$version/" packaging/arch/PKGBUILD
+            git diff --stat
+            if [[ $(git diff --numstat | wc -l) != 3 ]]; then
+              echo "::error::bumping $old to $version didn't change Cargo.toml, Cargo.lock and PKGBUILD"
+              exit 1
+            fi
+            git commit -qam "Release $version"
+            # If main moved on, the run queued behind this one releases it.
+            if ! git push origin HEAD:main; then
+              echo "::notice::main moved on, leaving the release to the next run"
+              exit 0
+            fi
+          fi
+
+          tag=v$version
+          git tag "$tag"
+          git push origin "refs/tags/$tag"
+          gh workflow run release.yml --ref "$tag"
+          echo "::notice::released $(git rev-parse --short HEAD) as $tag"

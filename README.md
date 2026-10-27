@@ -123,10 +123,12 @@ install `rh-git227` from Software Collections. The macOS app is not
 notarized: the first time, right-click it and choose **Open**, or run
 `xattr -d com.apple.quarantine /Applications/gitpanda.app`.
 
-To release, bump the version in `Cargo.toml` (and `Cargo.lock` and
-`packaging/arch/PKGBUILD`) and merge it to `main`: `tag.yml` then tags the
-commit `vX.Y.Z` and starts `release.yml`, which builds every package and
-publishes the GitHub release. Pushing a matching tag by hand works too.
+Every merge to `main` is released: `bump.yml` bumps the patch version in
+`Cargo.toml`, `Cargo.lock` and `packaging/arch/PKGBUILD`, commits that to
+`main`, tags it `vX.Y.Z` and starts `release.yml`, which builds every package
+and publishes the GitHub release. For a minor or major release, bump the
+version in the PR yourself and it's tagged as is. Changes to only Markdown or
+`docs/` aren't released. Pushing a matching tag by hand works too.
 `ci.yml` builds and tests every push on Linux, macOS and Windows.
 
 **Build from source** with a recent stable [Rust toolchain](https://rustup.rs).
