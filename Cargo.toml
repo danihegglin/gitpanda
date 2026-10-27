@@ -8,7 +8,7 @@ repository = "https://github.com/danihegglin/gitpanda"
 
 [dependencies]
 gpui = "0.2.2"
-git2 = { version = "0.20", default-features = false }
+git2 = { version = "0.21", default-features = false }
 notify = "8.2"
 smallvec = "1.16"
 anyhow = "1"
@@ -38,7 +38,7 @@ dev-script = []
 # Used only by the GITPANDA_SCRIPT self-screenshot hook; gpui already builds them.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"
-core-graphics = "0.24"
+core-graphics = "0.25"
 raw-window-handle = "0.6"
 image = { version = "0.25", default-features = false, features = ["png"] }
 

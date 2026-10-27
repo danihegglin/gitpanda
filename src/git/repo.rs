@@ -151,7 +151,7 @@ pub struct Snapshot {
 
 /// Oid used for the "uncommitted changes" pseudo-commit at the top.
 pub fn wip_oid() -> Oid {
-    Oid::zero()
+    Oid::ZERO_SHA1
 }
 
 /// The repository's working tree, or for a bare repository its git
@@ -294,11 +294,11 @@ fn read_head(repo: &Repository) -> Head {
         let unborn = repo
             .find_reference("HEAD")
             .ok()
-            .and_then(|r| r.symbolic_target().map(|t| t.trim_start_matches("refs/heads/").to_string()));
+            .and_then(|r| r.symbolic_target().ok().flatten().map(|t| t.trim_start_matches("refs/heads/").to_string()));
         return Head { branch: unborn.map(Into::into), oid: None };
     };
     Head {
-        branch: head_ref.is_branch().then(|| head_ref.shorthand().map(|s| s.to_string().into())).flatten(),
+        branch: head_ref.is_branch().then(|| head_ref.shorthand().ok().map(|s| s.to_string().into())).flatten(),
         oid: head_ref.target(),
     }
 }
