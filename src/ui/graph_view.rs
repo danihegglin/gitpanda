@@ -11,6 +11,7 @@ use crate::git::graph::{GraphRow, Half};
 use crate::git::ops::RebaseAction;
 use crate::git::repo::{RefKind, RefLabel, wip_oid};
 
+use super::scrollbar::{SCROLLBAR_W, scrollbar};
 use super::app::{Menu, MenuItem, ToastKind, GitPanda, action};
 use super::theme::*;
 use super::widgets::*;
@@ -56,7 +57,8 @@ impl GitPanda {
             .child(div().flex_1().child("COMMIT MESSAGE"))
             .child(div().w(px(170.)).flex_none().child("AUTHOR"))
             .child(div().w(px(96.)).flex_none().child("DATE"))
-            .child(div().w(px(76.)).flex_none().child("SHA"));
+            .child(div().w(px(76.)).flex_none().child("SHA"))
+            .child(div().w(px(SCROLLBAR_W)).flex_none());
 
         let list = if count == 0 {
             div()
@@ -68,16 +70,24 @@ impl GitPanda {
                 .child(if self.loading { "Loading history…" } else { "No commits yet" })
                 .into_any_element()
         } else {
-            uniform_list(
-                "graph",
-                count,
-                cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
-                    range.map(|i| this.render_commit_row(i, gw, cx)).collect::<Vec<_>>()
-                }),
-            )
-            .track_scroll(self.graph_scroll.clone())
-            .flex_1()
-            .into_any_element()
+            div()
+                .flex()
+                .flex_1()
+                .min_h_0()
+                .child(
+                    uniform_list(
+                        "graph",
+                        count,
+                        cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
+                            range.map(|i| this.render_commit_row(i, gw, cx)).collect::<Vec<_>>()
+                        }),
+                    )
+                    .track_scroll(self.graph_scroll.clone())
+                    .flex_1()
+                    .h_full(),
+                )
+                .child(scrollbar(self.graph_scroll.clone(), self.graph_scrollbar.clone()))
+                .into_any_element()
         };
 
         div()

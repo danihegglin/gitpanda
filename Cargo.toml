@@ -1,6 +1,6 @@
 [package]
 name = "gitpanda"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 description = "A fast, good-looking git client built on gpui"
 license = "MIT"
