@@ -209,6 +209,33 @@ fn switching_repositories_keeps_unsent_messages(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn switching_back_shows_the_repository_at_once(cx: &mut TestAppContext) {
+    let (a, b) = (three_commits(), three_commits());
+    let (view, cx) = open(&a, cx);
+    let two = oid_of(&view, "two", cx);
+    view.update(cx, |v, cx| v.select(two, cx));
+    cx.run_until_parked();
+    view.update(cx, |v, cx| v.open_repo(&b.0, cx));
+    cx.run_until_parked();
+    // A commit made while away shows up once the reload lands.
+    a.commit("four.txt", "four\n", "four");
+    view.update(cx, |v, cx| v.open_repo(&a.0, cx));
+    // Before any loading finishes: the history and selection as left.
+    view.read_with(cx, |v, _| {
+        let s = v.snap.as_ref().expect("parked snapshot");
+        assert_eq!(Some(&s.workdir), v.workdir.as_ref());
+        assert_eq!(s.commits.len(), 3);
+        assert_eq!(v.selected, Some(two));
+        assert!(v.detail.as_ref().is_some_and(|d| d.oid == two));
+    });
+    cx.run_until_parked();
+    view.read_with(cx, |v, _| {
+        assert_eq!(v.snap.as_ref().unwrap().commits.len(), 4);
+        assert_eq!(v.selected, Some(two));
+    });
+}
+
+#[gpui::test]
 fn dragging_a_tab_reorders_the_project(cx: &mut TestAppContext) {
     let (a, b, c) = (three_commits(), three_commits(), three_commits());
     let (view, cx) = open(&a, cx);
