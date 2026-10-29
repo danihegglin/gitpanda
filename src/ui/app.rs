@@ -1327,7 +1327,7 @@ impl Render for GitPanda {
                 .flex()
                 .flex_col()
                 .size_full()
-                .when(!self.workspace.projects.is_empty(), |d| d.child(self.render_project_bar(cx)))
+                .when(!self.workspace.projects.is_empty(), |d| d.child(self.render_project_bar(window, cx)))
                 .child(div().flex_1().min_h_0().child(self.render_welcome(cx)))
                 .into_any_element()
         } else {
@@ -1335,7 +1335,7 @@ impl Render for GitPanda {
                 .flex()
                 .flex_col()
                 .size_full()
-                .child(self.render_project_bar(cx))
+                .child(self.render_project_bar(window, cx))
                 .child(self.render_toolbar(cx))
                 .children(self.render_banner(cx))
                 .child(
@@ -1351,7 +1351,25 @@ impl Render for GitPanda {
                 .into_any_element()
         };
 
-        div()
+        // Without a top bar, the window buttons get a bar of their own.
+        let bare_controls = (self.workdir.is_none() && self.workspace.projects.is_empty())
+            .then(|| super::frame::window_controls(window))
+            .flatten()
+            .map(|controls| {
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .items_center()
+                    .h(px(super::projects::HEIGHT))
+                    .pr(px(14.))
+                    .child(super::chrome::drag_space())
+                    .child(controls)
+            });
+
+        let root = div()
             .id("root")
             .relative()
             .size_full()
@@ -1362,9 +1380,11 @@ impl Render for GitPanda {
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
             .child(body)
+            .children(bare_controls)
             .children(self.render_modal(window, cx))
             .children(self.render_menu(cx))
-            .child(self.render_toasts(cx))
+            .child(self.render_toasts(cx));
+        super::frame::frame(root.into_any_element(), window)
     }
 }
 

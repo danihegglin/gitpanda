@@ -9,8 +9,8 @@ mod workspace;
 use std::path::PathBuf;
 
 use gpui::{
-    App, AppContext, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, px,
-    size,
+    App, AppContext, Application, Bounds, TitlebarOptions, WindowBounds, WindowDecorations,
+    WindowOptions, point, px, size,
 };
 
 use ui::app::GitPanda;
@@ -39,6 +39,12 @@ fn main() {
                     traffic_light_position: Some(point(px(16.), px(13.))),
                 }),
                 window_min_size: Some(size(px(960.), px(560.))),
+                // gpui asks Wayland compositors for server-side decorations, and
+                // ones without them (GNOME) then show no window buttons at all.
+                // Draw our own there instead (see ui/frame.rs).
+                window_decorations: std::env::var_os("WAYLAND_DISPLAY")
+                    .is_some()
+                    .then_some(WindowDecorations::Client),
                 ..Default::default()
             },
             |window, cx| {

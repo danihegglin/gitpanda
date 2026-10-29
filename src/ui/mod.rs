@@ -1,6 +1,7 @@
 pub mod app;
 mod chrome;
 mod diff_view;
+mod frame;
 mod graph_view;
 mod panel;
 mod projects;
