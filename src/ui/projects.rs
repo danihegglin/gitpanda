@@ -300,7 +300,7 @@ impl GitPanda {
 
     // ---- rendering -------------------------------------------------------------
 
-    pub fn render_project_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    pub fn render_project_bar(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let project = self.workspace.project();
         let name: SharedString = project.map_or("No project".to_string(), |p| p.name.clone()).into();
         let repos = project.map(|p| p.repos.clone()).unwrap_or_default();
@@ -401,6 +401,7 @@ impl GitPanda {
             .when(project.is_some(), |d| {
                 d.child(div().flex_none().text_size(px(11.)).text_color(c(DARK3)).child(overview.join(" · ")))
             })
+            .children(super::frame::window_controls(window))
             .into_any_element()
     }
 
