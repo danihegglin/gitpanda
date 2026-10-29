@@ -231,6 +231,7 @@ pub struct GitPanda {
     pub collapsed: HashSet<&'static str>,
 
     pub graph_scroll: UniformListScrollHandle,
+    pub graph_scrollbar: super::scrollbar::ScrollbarDrag,
     pub diff_scroll: UniformListScrollHandle,
     pub files_scroll: UniformListScrollHandle,
 
@@ -300,6 +301,7 @@ impl GitPanda {
             busy: None,
             collapsed: HashSet::new(),
             graph_scroll: UniformListScrollHandle::new(),
+            graph_scrollbar: Default::default(),
             diff_scroll: UniformListScrollHandle::new(),
             files_scroll: UniformListScrollHandle::new(),
             workspace,

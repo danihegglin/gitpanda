@@ -633,3 +633,37 @@ fn commit_shortcut_keeps_the_keyboard_without_a_message_box(cx: &mut TestAppCont
     cx.simulate_keystrokes("down");
     assert_eq!(selected_summary(&view, cx), "two");
 }
+
+#[gpui::test]
+fn graph_scrollbar_drags_and_jumps(cx: &mut TestAppContext) {
+    let r = TempRepo::new();
+    for n in 0..200 {
+        r.commit(&format!("{n}.txt"), "x\n", &format!("commit {n}"));
+    }
+    let (view, cx) = open(&r, cx);
+    let handle = view.read_with(cx, |v, _| v.graph_scroll.clone());
+    let base = handle.0.borrow().base_handle.clone();
+    let list = base.bounds();
+    let max = base.max_offset().height;
+    assert!(max > gpui::px(0.), "200 commits should overflow the window");
+    assert_eq!(base.offset().y, gpui::px(0.));
+    // The bar sits just right of the list.
+    let x = list.right() + gpui::px(5.);
+    let none = gpui::Modifiers::none();
+
+    // Dragging the thumb from the top to the bottom scrolls to the end.
+    let top = gpui::point(x, list.top() + gpui::px(4.));
+    let bottom = gpui::point(x, list.bottom() + gpui::px(50.));
+    cx.simulate_mouse_down(top, gpui::MouseButton::Left, none);
+    cx.simulate_mouse_move(bottom, gpui::MouseButton::Left, none);
+    cx.simulate_mouse_up(bottom, gpui::MouseButton::Left, none);
+    cx.run_until_parked();
+    assert_eq!(base.offset().y, -max);
+
+    // Clicking the track near the top jumps back there.
+    cx.simulate_mouse_down(top, gpui::MouseButton::Left, none);
+    cx.simulate_mouse_up(top, gpui::MouseButton::Left, none);
+    cx.run_until_parked();
+    assert_eq!(base.offset().y, gpui::px(0.));
+    assert_eq!(view.read_with(cx, |v, _| v.graph_scrollbar.get()), None);
+}
