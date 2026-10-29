@@ -2068,7 +2068,7 @@ dependencies = [
 
 [[package]]
 name = "gitpanda"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "core-graphics 0.25.0",
