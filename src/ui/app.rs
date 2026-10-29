@@ -190,6 +190,18 @@ impl ConflictView {
     }
 }
 
+/// How many switched-away repositories keep their state.
+const PARKED_MAX: usize = 8;
+
+/// The view of a repository that was switched away from.
+struct Parked {
+    snap: Snapshot,
+    selected: Option<Oid>,
+    range: Option<(usize, usize)>,
+    detail: Option<CommitDetail>,
+    graph_scroll: UniformListScrollHandle,
+}
+
 pub struct GitPanda {
     pub focus: FocusHandle,
     pub workdir: Option<PathBuf>,
@@ -228,8 +240,12 @@ pub struct GitPanda {
     pub(super) summary_gen: u64,
     /// Unsent commit messages of repositories switched away from.
     drafts: HashMap<PathBuf, String>,
+    /// Repositories recently switched away from, newest last, shown again at
+    /// once when switched back to while a reload catches up.
+    parked: Vec<Parked>,
 
     watcher: Option<notify::RecommendedWatcher>,
+    watch_gen: u64,
     fs_dirty: Arc<AtomicBool>,
     _poll: Task<()>,
 }
@@ -290,7 +306,9 @@ impl GitPanda {
             summaries: HashMap::new(),
             summary_gen: 0,
             drafts: HashMap::new(),
+            parked: Vec::new(),
             watcher: None,
+            watch_gen: 0,
             fs_dirty,
             _poll: poll,
         };
@@ -323,9 +341,19 @@ impl GitPanda {
                 if let Some(draft) = self.drafts.remove(&dir) {
                     self.commit_input.update(cx, |i, cx| i.set_text(draft, cx));
                 }
+                if let Some(i) = self.parked.iter().position(|p| p.snap.workdir == dir) {
+                    let p = self.parked.remove(i);
+                    self.snap = Some(p.snap);
+                    self.selected = p.selected;
+                    self.range = p.range;
+                    self.detail = p.detail;
+                    self.graph_scroll = p.graph_scroll;
+                }
                 self.workdir = Some(dir.clone());
                 self.open_error = None;
-                self.watch(&dir);
+                self.watch(&dir, cx);
+                // With the parked snapshot's history to reuse, this skips the
+                // walk unless a ref moved meanwhile.
                 self.reload(cx);
                 if project != self.workspace.active || !self.summaries.contains_key(&dir) {
                     self.refresh_summaries(cx);
@@ -347,9 +375,21 @@ impl GitPanda {
         if let Some(old) = self.workdir.take() {
             let draft = self.commit_input.read(cx).text().to_string();
             if !draft.trim().is_empty() {
-                self.drafts.insert(old, draft);
+                self.drafts.insert(old.clone(), draft);
             }
             self.commit_input.update(cx, |i, cx| i.set_text("", cx));
+            if let Some(snap) = self.snap.take().filter(|s| s.workdir == old) {
+                self.parked.push(Parked {
+                    snap,
+                    selected: self.selected,
+                    range: self.range,
+                    detail: self.detail.take(),
+                    graph_scroll: std::mem::replace(&mut self.graph_scroll, UniformListScrollHandle::new()),
+                });
+                if self.parked.len() > PARKED_MAX {
+                    self.parked.remove(0);
+                }
+            }
         }
         // Results still in flight belong to the old repository.
         self.load_gen += 1;
@@ -357,7 +397,11 @@ impl GitPanda {
         self.file_gen += 1;
         self.loading = false;
         self.reload_queued = false;
-        self.watcher = None;
+        self.watch_gen += 1;
+        // Dropping a watcher unwatches every directory; not on this thread.
+        if let Some(w) = self.watcher.take() {
+            cx.background_executor().spawn(async move { drop(w) }).detach();
+        }
         self.snap = None;
         self.selected = None;
         self.range = None;
@@ -387,11 +431,30 @@ impl GitPanda {
         .detach();
     }
 
-    fn watch(&mut self, dir: &Path) {
-        self.watcher = None;
+    /// Watches `dir` for changes. Watching recursively visits every directory
+    /// in the working tree, which takes a while in large ones, so the watcher
+    /// is set up in the background.
+    fn watch(&mut self, dir: &Path, cx: &mut Context<Self>) {
+        self.watch_gen += 1;
+        let generation = self.watch_gen;
         let flag = self.fs_dirty.clone();
         let root = dir.to_path_buf();
-        let Ok(repo) = git2::Repository::open(dir) else { return };
+        cx.spawn(async move |this, cx| {
+            let w = cx.background_executor().spawn(async move { Self::watcher(root, flag) }).await;
+            let _ = this.update(cx, |this, cx| {
+                if generation == this.watch_gen {
+                    this.watcher = w;
+                } else if let Some(w) = w {
+                    cx.background_executor().spawn(async move { drop(w) }).detach();
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn watcher(root: PathBuf, flag: Arc<AtomicBool>) -> Option<notify::RecommendedWatcher> {
+        let dir = root.clone();
+        let repo = git2::Repository::open(&dir).ok()?;
         let git_dir = repo.path().to_path_buf();
         let handler = move |res: notify::Result<notify::Event>| {
             let Ok(ev) = res else { return };
@@ -412,11 +475,9 @@ impl GitPanda {
                 flag.store(true, Ordering::Release);
             }
         };
-        if let Ok(mut w) = notify::recommended_watcher(handler) {
-            if w.watch(dir, RecursiveMode::Recursive).is_ok() {
-                self.watcher = Some(w);
-            }
-        }
+        let mut w = notify::recommended_watcher(handler).ok()?;
+        w.watch(&dir, RecursiveMode::Recursive).ok()?;
+        Some(w)
     }
 
     pub fn reload(&mut self, cx: &mut Context<Self>) {
