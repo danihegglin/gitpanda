@@ -130,9 +130,10 @@ impl GitPanda {
     /// Opens the file `delta` places from the open one, or the first file
     /// when none is open.
     pub fn step_file(&mut self, delta: isize, cx: &mut Context<Self>) {
+        self.clear_file_selection();
         let files = self.panel_files();
         if files.is_empty() {
-            return;
+            return cx.notify();
         }
         let cur = self
             .file_view
@@ -148,6 +149,140 @@ impl GitPanda {
         let (source, path, status, row) = files[next].clone();
         self.open_file(source, path, status, cx);
         self.files_scroll.scroll_to_item(row, ScrollStrategy::Center);
+    }
+
+    // ---- multi-selection of unstaged files ---------------------------------
+
+    /// Unstaged files, in display order, and whether each is untracked.
+    fn unstaged_files(&self) -> Vec<(String, bool)> {
+        match &self.snap {
+            Some(s) if self.selected == Some(wip_oid()) => {
+                s.status.unstaged.iter().map(|e| (e.path.to_string(), e.status == FileStatus::Untracked)).collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// The selected unstaged files, in display order.
+    pub fn selected_files(&self) -> Vec<(String, bool)> {
+        self.unstaged_files().into_iter().filter(|(p, _)| self.file_sel.contains(p)).collect()
+    }
+
+    pub fn clear_file_selection(&mut self) {
+        self.file_sel.clear();
+        self.file_anchor = None;
+        self.file_head = None;
+    }
+
+    /// Drops selected files that are no longer unstaged.
+    pub fn prune_file_selection(&mut self) {
+        let paths: std::collections::HashSet<String> = self.unstaged_files().into_iter().map(|(p, _)| p).collect();
+        self.file_sel.retain(|p| paths.contains(p));
+        if self.file_sel.is_empty() {
+            self.clear_file_selection();
+        }
+    }
+
+    pub fn select_all_files(&mut self, cx: &mut Context<Self>) {
+        let files = self.unstaged_files();
+        self.file_anchor = files.first().map(|(p, _)| p.clone());
+        self.file_head = files.last().map(|(p, _)| p.clone());
+        self.file_sel = files.into_iter().map(|(p, _)| p).collect();
+        cx.notify();
+    }
+
+    /// The unstaged file a shift-selection grows from: its moving end, or
+    /// else the open file when that is unstaged.
+    pub fn file_cursor(&self) -> Option<String> {
+        let files = self.unstaged_files();
+        let has = |p: &String| files.iter().any(|(f, _)| f == p);
+        self.file_head.clone().filter(has).or_else(|| {
+            self.file_view.as_ref().filter(|f| f.source == DiffSource::Unstaged).map(|f| f.path.clone()).filter(has)
+        })
+    }
+
+    /// Selects the unstaged files from the anchor through `path`.
+    fn select_file_range(&mut self, path: String) {
+        let files = self.unstaged_files();
+        let pos = |p: &str| files.iter().position(|(f, _)| f == p);
+        let Some(head) = pos(&path) else { return };
+        let anchor = self
+            .file_anchor
+            .as_deref()
+            .and_then(pos)
+            .or_else(|| self.file_cursor().as_deref().and_then(pos))
+            .unwrap_or(head);
+        let (lo, hi) = (anchor.min(head), anchor.max(head));
+        self.file_sel = files[lo..=hi].iter().map(|(p, _)| p.clone()).collect();
+        self.file_anchor = Some(files[anchor].0.clone());
+        self.file_head = Some(path);
+    }
+
+    /// Moves the selection's moving end `delta` files, opening that file.
+    pub fn extend_file_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let Some(cur) = self.file_cursor() else { return };
+        let files = self.unstaged_files();
+        let i = files.iter().position(|(p, _)| *p == cur).unwrap_or(0);
+        let next = (i as isize + delta).clamp(0, files.len() as isize - 1) as usize;
+        if self.file_anchor.is_none() {
+            self.file_anchor = Some(cur);
+        }
+        let path = files[next].0.clone();
+        self.select_file_range(path.clone());
+        let hit = self.panel_files().into_iter().find(|(s, p, ..)| *s == DiffSource::Unstaged && *p == path);
+        if let Some((source, p, status, row)) = hit {
+            self.open_file(source, p, status, cx);
+            self.files_scroll.scroll_to_item(row, ScrollStrategy::Center);
+        }
+        cx.notify();
+    }
+
+    /// The files a row action applies to: the whole selection when the row
+    /// is part of it, else just that row.
+    fn action_files(&self, path: &str, untracked: bool) -> Vec<(String, bool)> {
+        if self.file_sel.len() > 1 && self.file_sel.contains(path) {
+            self.selected_files()
+        } else {
+            vec![(path.to_string(), untracked)]
+        }
+    }
+
+    pub fn discard_files(&mut self, files: Vec<(String, bool)>, cx: &mut Context<Self>) {
+        match files.len() {
+            0 => {}
+            1 => {
+                let (path, untracked) = files.into_iter().next().unwrap();
+                self.discard_path(path, untracked, cx);
+            }
+            n => {
+                let deleted = files.iter().filter(|(_, u)| *u).count();
+                let mut body = format!("All unstaged changes to {n} files will be lost.");
+                if deleted > 0 {
+                    body += &format!(" {deleted} untracked file{} will be deleted.", if deleted == 1 { "" } else { "s" });
+                }
+                self.confirm(
+                    format!("Discard {n} files?"),
+                    body,
+                    "Discard",
+                    true,
+                    action(move |this, _, cx| {
+                        let files = files.clone();
+                        this.clear_file_selection();
+                        this.run("Discarding", move |g| g.discard_many(&files).map(|_| format!("Discarded {n} files")), cx);
+                    }),
+                );
+                cx.notify();
+            }
+        }
+    }
+
+    pub fn stage_files(&mut self, files: Vec<(String, bool)>, cx: &mut Context<Self>) {
+        self.clear_file_selection();
+        self.run(
+            "Staging",
+            move |g| g.stage(&files.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>()).map(|_| String::new()),
+            cx,
+        );
     }
 
     fn render_wip_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -259,9 +394,16 @@ impl GitPanda {
                     Group::Unstaged => ("UNSTAGED", (n > 0).then_some(("Stage all", GREEN))),
                     Group::Staged => ("STAGED", (n > 0).then_some(("Unstage all", YELLOW))),
                 };
+                let picked = if g == Group::Unstaged { self.file_sel.len() } else { 0 };
                 base.child(section_label(label))
                     .child(pill(n.to_string(), if g == Group::Conflicted { RED } else { DARK5 }, false))
+                    .when(picked > 0, |d| d.child(div().text_size(px(11.)).text_color(c(COMMENT)).child(format!("{picked} selected"))))
                     .child(div().flex_1())
+                    .when(picked > 1, |d| {
+                        d.child(mini_button("discard-selected", format!("Discard {picked}"), RED).on_click(cx.listener(|this, _, _, cx| {
+                            this.discard_files(this.selected_files(), cx)
+                        })))
+                    })
                     .children(btn.map(|(t, col)| {
                         mini_button(("all", i), t, col).on_click(cx.listener(move |this, _, _, cx| match g {
                             Group::Unstaged => this.run("Staging", |g| g.stage_all().map(|_| String::new()), cx),
@@ -285,16 +427,17 @@ impl GitPanda {
                 };
                 let (p1, p2, p3) = (path.clone(), path.clone(), path.clone());
                 let untracked = status == FileStatus::Untracked;
+                let picked = g == Group::Unstaged && self.file_sel.contains(&path);
                 let actions = div().flex().gap(px(4.)).opacity(0.).group_hover("wip-row", |s| s.opacity(1.));
                 let actions = match g {
                     Group::Unstaged => actions
                         .child(mini_button(("discard", i), "Discard", RED).on_click(cx.listener(move |this, _, _, cx| {
                             cx.stop_propagation();
-                            this.discard_path(p1.clone(), untracked, cx)
+                            this.discard_files(this.action_files(&p1, untracked), cx)
                         })))
                         .child(mini_button(("stage", i), "Stage", GREEN).on_click(cx.listener(move |this, _, _, cx| {
                             cx.stop_propagation();
-                            this.stage_path(p2.clone(), cx)
+                            this.stage_files(this.action_files(&p2, untracked), cx)
                         }))),
                     Group::Staged => actions.child(mini_button(("unstage", i), "Unstage", YELLOW).on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
@@ -314,7 +457,7 @@ impl GitPanda {
                 };
                 base.group("wip-row")
                     .cursor_pointer()
-                    .when(open, |d| d.bg(c(BG_HIGHLIGHT)))
+                    .when(open || picked, |d| d.bg(c(BG_HIGHLIGHT)))
                     .hover(|s| s.bg(c(BG_HOVER)))
                     .child(status_badge(status.letter()))
                     .child(file_label(&path, None))
@@ -322,6 +465,23 @@ impl GitPanda {
                     .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
                         window.focus(&this.focus);
                         let p = p3.clone();
+                        let m = ev.modifiers();
+                        if g == Group::Unstaged && (m.shift || m.platform || m.control) && ev.click_count() == 1 {
+                            if m.shift {
+                                this.select_file_range(p.clone());
+                            } else if !this.file_sel.remove(&p) {
+                                // ⌘-click toggles, starting from the open file.
+                                if let Some(open) = this.file_cursor() {
+                                    this.file_sel.insert(open);
+                                }
+                                this.file_sel.insert(p.clone());
+                                this.file_anchor = Some(p.clone());
+                                this.file_head = Some(p.clone());
+                            }
+                            this.open_file(DiffSource::Unstaged, p, status, cx);
+                            return;
+                        }
+                        this.clear_file_selection();
                         match g {
                             Group::Conflicted => this.open_conflict(p, cx),
                             Group::Unstaged if ev.click_count() == 2 => this.stage_path(p, cx),
@@ -333,7 +493,11 @@ impl GitPanda {
                     .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
-                            let items = this.file_menu(path.clone(), g == Group::Staged, untracked);
+                            let items = if g == Group::Unstaged && this.file_sel.len() > 1 && this.file_sel.contains(&path) {
+                                this.selection_menu()
+                            } else {
+                                this.file_menu(path.clone(), g == Group::Staged, untracked)
+                            };
                             this.menu = Some(Menu { pos: ev.position, items });
                             cx.notify();
                         }),
@@ -341,6 +505,24 @@ impl GitPanda {
                     .into_any_element()
             }
         }
+    }
+
+    /// Right-click menu for a row that is part of a multi-selection.
+    fn selection_menu(&self) -> Vec<MenuItem> {
+        let n = self.file_sel.len();
+        vec![
+            MenuItem::Action {
+                label: format!("Stage {n} files").into(),
+                danger: false,
+                action: action(|this, _, cx| this.stage_files(this.selected_files(), cx)),
+            },
+            MenuItem::Separator,
+            MenuItem::Action {
+                label: format!("Discard {n} files…").into(),
+                danger: true,
+                action: action(|this, _, cx| this.discard_files(this.selected_files(), cx)),
+            },
+        ]
     }
 
     fn file_menu(&self, path: String, staged: bool, untracked: bool) -> Vec<MenuItem> {
@@ -711,5 +893,108 @@ mod tests {
         cx.simulate_keystrokes("enter");
         cx.run_until_parked();
         assert!(!r.0.join("new.txt").exists());
+    }
+
+    fn picked(view: &gpui::Entity<GitPanda>, cx: &mut gpui::VisualTestContext) -> Vec<String> {
+        view.read_with(cx, |v, _| v.selected_files().into_iter().map(|(p, _)| p).collect())
+    }
+
+    /// `mixed_tree` plus a third unstaged file.
+    fn three_unstaged() -> TempRepo {
+        let r = mixed_tree();
+        r.write("three.txt", "changed too\n");
+        r
+    }
+
+    #[gpui::test]
+    fn cmd_a_selects_every_unstaged_file(cx: &mut TestAppContext) {
+        let r = three_unstaged();
+        let (view, cx) = open(&r, cx);
+        let all: Vec<String> = view.read_with(cx, |v, _| v.unstaged_files().into_iter().map(|(p, _)| p).collect());
+        assert_eq!(all.len(), 3);
+        cx.simulate_keystrokes("cmd-a");
+        assert_eq!(picked(&view, cx), all);
+        // The staged file is not part of it, and escape lets go.
+        assert!(!picked(&view, cx).contains(&"two.txt".to_string()));
+        cx.simulate_keystrokes("escape");
+        assert!(picked(&view, cx).is_empty());
+        cx.simulate_keystrokes("ctrl-a");
+        assert_eq!(picked(&view, cx).len(), 3);
+    }
+
+    #[gpui::test]
+    fn cmd_a_does_nothing_on_a_commit(cx: &mut TestAppContext) {
+        let r = three_unstaged();
+        let (view, cx) = open(&r, cx);
+        cx.simulate_keystrokes("down cmd-a");
+        assert_ne!(view.read_with(cx, |v, _| v.selected), Some(wip_oid()));
+        assert!(view.read_with(cx, |v, _| v.file_sel.is_empty()));
+    }
+
+    #[gpui::test]
+    fn shift_arrows_extend_the_selection(cx: &mut TestAppContext) {
+        let r = three_unstaged();
+        let (view, cx) = open(&r, cx);
+        let all: Vec<String> = view.read_with(cx, |v, _| v.unstaged_files().into_iter().map(|(p, _)| p).collect());
+        let open_path = |cx: &mut gpui::VisualTestContext| view.read_with(cx, |v, _| v.file_view.as_ref().map(|f| f.path.clone()));
+        cx.simulate_keystrokes("right");
+        assert_eq!(open_path(cx).as_ref(), Some(&all[0]));
+        cx.simulate_keystrokes("shift-down");
+        assert_eq!(picked(&view, cx), all[..2]);
+        assert_eq!(open_path(cx).as_ref(), Some(&all[1]));
+        cx.simulate_keystrokes("shift-down shift-down");
+        assert_eq!(picked(&view, cx), all, "stops at the last unstaged file");
+        cx.simulate_keystrokes("shift-up");
+        assert_eq!(picked(&view, cx), all[..2]);
+        // The graph selection stays on the working tree.
+        assert_eq!(view.read_with(cx, |v, _| v.selected), Some(wip_oid()));
+        // A plain arrow goes back to one file.
+        cx.simulate_keystrokes("down");
+        assert!(picked(&view, cx).is_empty());
+        assert_eq!(open_path(cx).as_ref(), Some(&all[2]));
+    }
+
+    #[gpui::test]
+    fn discarding_the_selection(cx: &mut TestAppContext) {
+        let r = three_unstaged();
+        let (view, cx) = open(&r, cx);
+        cx.simulate_keystrokes("cmd-a cmd-backspace");
+        view.read_with(cx, |v, _| match &v.modal {
+            Some(super::super::app::Modal::Confirm { title, body, .. }) => {
+                assert_eq!(title.as_ref(), "Discard 3 files?");
+                assert_eq!(body.as_ref(), "All unstaged changes to 3 files will be lost. 1 untracked file will be deleted.");
+            }
+            _ => panic!("expected a confirmation"),
+        });
+        assert!(r.0.join("new.txt").exists());
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert!(!r.0.join("new.txt").exists());
+        assert_eq!(std::fs::read_to_string(r.0.join("one.txt")).unwrap(), "one\n");
+        assert_eq!(std::fs::read_to_string(r.0.join("three.txt")).unwrap(), "three\n");
+        // Staged changes are left alone.
+        assert_eq!(r.git(&["diff", "--cached", "--name-only"]).trim(), "two.txt");
+        view.read_with(cx, |v, _| {
+            assert!(v.snap.as_ref().unwrap().status.unstaged.is_empty());
+            assert!(v.file_sel.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn row_actions_and_menu_cover_the_selection(cx: &mut TestAppContext) {
+        let r = three_unstaged();
+        let (view, cx) = open(&r, cx);
+        cx.simulate_keystrokes("right shift-down");
+        let two = picked(&view, cx);
+        assert_eq!(view.read_with(cx, |v, _| v.action_files(&two[0], false)).len(), 2);
+        let items = view.read_with(cx, |v, _| v.selection_menu());
+        assert_eq!(labels(&items), ["Stage 2 files", "—", "Discard 2 files…"]);
+        click(&view, items, "Stage 2 files", cx);
+        let mut staged: Vec<String> = r.git(&["diff", "--cached", "--name-only"]).split_whitespace().map(String::from).collect();
+        staged.sort();
+        let mut want = two.clone();
+        want.push("two.txt".into());
+        want.sort();
+        assert_eq!(staged, want);
     }
 }
