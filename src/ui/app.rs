@@ -220,6 +220,12 @@ pub struct GitPanda {
     detail_gen: u64,
     pub file_view: Option<FileView>,
     file_gen: u64,
+    /// Unstaged files picked for a bulk action (⌘A, shift-arrows,
+    /// shift- or ⌘-click), by path.
+    pub file_sel: HashSet<String>,
+    /// The fixed and the moving end of a shift-selection of files.
+    pub file_anchor: Option<String>,
+    pub file_head: Option<String>,
     pub conflict: Option<ConflictView>,
 
     pub commit_input: Entity<TextInput>,
@@ -309,6 +315,9 @@ impl GitPanda {
             graph_scrollbar: Default::default(),
             diff_scroll: UniformListScrollHandle::new(),
             files_scroll: UniformListScrollHandle::new(),
+            file_sel: HashSet::new(),
+            file_anchor: None,
+            file_head: None,
             workspace,
             summaries: HashMap::new(),
             summary_gen: 0,
@@ -415,6 +424,7 @@ impl GitPanda {
         self.detail = None;
         self.file_view = None;
         self.conflict = None;
+        self.clear_file_selection();
         self.amend = false;
         self.menu = None;
         self.modal = None;
@@ -544,6 +554,7 @@ impl GitPanda {
                 self.conflict = None;
             }
         }
+        self.prune_file_selection();
         self.load_detail(changed, cx);
         self.reload_file_view(cx);
         cx.notify();
@@ -599,6 +610,7 @@ impl GitPanda {
             self.selected = Some(oid);
             self.file_view = None;
             self.conflict = None;
+            self.clear_file_selection();
             self.load_detail(true, cx);
         }
         cx.notify();
@@ -1320,7 +1332,9 @@ impl GitPanda {
         }
         match key {
             "escape" => {
-                if self.conflict.take().is_some() || self.file_view.take().is_some() {
+                if !self.file_sel.is_empty() {
+                    self.clear_file_selection();
+                } else if self.conflict.take().is_some() || self.file_view.take().is_some() {
                     window.focus(&self.focus);
                 } else if self.range.take().is_some() {
                 } else {
@@ -1345,6 +1359,13 @@ impl GitPanda {
                 self.new_branch_at(at, window, cx);
             }
             "s" if cmd && m.shift && !self.bare() => self.stash(window, cx),
+            "a" if cmd && !m.shift && self.selected == Some(wip_oid()) => self.select_all_files(cx),
+            "backspace" if cmd && !self.file_sel.is_empty() => self.discard_files(self.selected_files(), cx),
+            // Shift-arrows grow the unstaged file selection when there is
+            // one, or an unstaged file is open; otherwise the graph's.
+            "up" | "k" | "down" | "j" if m.shift && !cmd && self.file_cursor().is_some() => {
+                self.extend_file_selection(if matches!(key, "up" | "k") { -1 } else { 1 }, cx)
+            }
             "backspace" if cmd && !self.bare() && self.file_view.is_none() && self.conflict.is_none() => {
                 self.confirm_drop(self.selected_commits(), cx)
             }

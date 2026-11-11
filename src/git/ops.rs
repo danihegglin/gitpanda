@@ -228,6 +228,21 @@ impl<'a> Git<'a> {
         }
     }
 
+    /// Discards several files at once: tracked ones in a single checkout,
+    /// untracked ones deleted.
+    pub fn discard_many(&self, files: &[(String, bool)]) -> Result<()> {
+        let tracked: Vec<&str> = files.iter().filter(|(_, u)| !u).map(|(p, _)| p.as_str()).collect();
+        if !tracked.is_empty() {
+            let mut args = vec!["checkout", "--"];
+            args.extend(tracked);
+            self.run(&args).map(drop)?;
+        }
+        for (p, _) in files.iter().filter(|(_, u)| *u) {
+            self.discard(p, true)?;
+        }
+        Ok(())
+    }
+
     /// Stage, unstage or discard one hunk, or selected lines of it.
     pub fn apply_hunk(
         &self,
