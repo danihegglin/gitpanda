@@ -1,16 +1,69 @@
 //! Toolbar, operation banner, status bar, welcome screen, and overlays
 //! (dialogs, context menu, toasts).
 
+use std::time::Duration;
+
 use gpui::{
-    AnyElement, Context, Window, anchored, deferred, div, prelude::*, px,
+    Animation, AnimationExt as _, AnyElement, Context, Window, anchored, deferred, div, prelude::*, pulsating_between, px, relative,
 };
 
-use crate::git::ops::RebaseAction;
+use crate::git::ops::{Progress, RebaseAction};
 use crate::git::repo::OpState;
 
 use super::app::{MenuItem, Modal, ToastKind, GitPanda};
 use super::theme::*;
 use super::widgets::*;
+
+/// What the toolbar shows while an operation runs: a breathing dot, the
+/// operation, and for network operations git's current phase with a bar.
+fn busy_pill(label: gpui::SharedString, progress: Option<Progress>) -> impl IntoElement {
+    let dot = div()
+        .flex_none()
+        .size(px(7.))
+        .rounded_full()
+        .bg(c(BLUE))
+        .with_animation("busy-dot", Animation::new(Duration::from_millis(1200)).repeat().with_easing(pulsating_between(0.3, 1.0)), |d, t| d.opacity(t));
+    let percent = progress.as_ref().and_then(|p| p.percent);
+    div()
+        .debug_selector(|| "busy".into())
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .px(px(10.))
+        .py(px(4.))
+        .min_h(px(26.))
+        .max_w(px(220.))
+        .rounded(px(13.))
+        .bg(alpha(BLUE, 0.12))
+        .text_size(px(12.))
+        .text_color(c(BLUE))
+        .child(dot)
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .min_w_0()
+                .when(progress.is_some(), |d| d.w(px(150.)))
+                .child(
+                    div()
+                        .flex()
+                        .justify_between()
+                        .gap(px(6.))
+                        .child(div().truncate().child(label))
+                        .children(percent.map(|p| div().flex_none().child(format!("{p}%")))),
+                )
+                .children(progress.map(|p| div().truncate().text_size(px(10.)).text_color(c(COMMENT)).child(p.phase)))
+                .children(percent.map(|p| {
+                    div()
+                        .mt(px(3.))
+                        .h(px(2.))
+                        .w_full()
+                        .rounded_full()
+                        .bg(alpha(BLUE, 0.2))
+                        .child(div().h_full().rounded_full().bg(c(BLUE)).w(relative(p as f32 / 100.)))
+                })),
+        )
+}
 
 fn tool(id: &'static str, glyph: &'static str, label: &'static str) -> gpui::Stateful<gpui::Div> {
     div()
@@ -117,8 +170,8 @@ impl GitPanda {
                     ),
             )
             .child(drag_space())
-            .child(tool("fetch", "⟳", "Fetch").on_click(cx.listener(|this, _, _, cx| this.run("Fetching", |g| g.fetch().map(|_| "Fetched all remotes".into()), cx))))
-            .when(!bare, |d| d.child(tool("pull", "↓", "Pull").on_click(cx.listener(|this, _, _, cx| this.run("Pulling", |g| g.pull().map(|_| "Pulled".into()), cx)))))
+            .child(tool("fetch", "⟳", "Fetch").on_click(cx.listener(|this, _, _, cx| this.fetch(cx))))
+            .when(!bare, |d| d.child(tool("pull", "↓", "Pull").on_click(cx.listener(|this, _, _, cx| this.pull(cx)))))
             .child(tool("push", "↑", "Push").on_click(cx.listener(|this, _, _, cx| this.push(false, cx))))
             .child(div().w(px(1.)).h(px(28.)).bg(c(BORDER_HI)).mx(px(6.)))
             .child(tool("branch", "⑂", "Branch").on_click(cx.listener(|this, _, window, cx| {
@@ -137,20 +190,7 @@ impl GitPanda {
                     .justify_end()
                     .gap(px(8.))
                     .w(px(220.))
-                    .children(self.busy.clone().map(|b| {
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .px(px(10.))
-                            .h(px(26.))
-                            .rounded_full()
-                            .bg(alpha(BLUE, 0.12))
-                            .text_size(px(12.))
-                            .text_color(c(BLUE))
-                            .child(div().size(px(7.)).rounded_full().bg(c(BLUE)))
-                            .child(b)
-                    })),
+                    .children(self.busy.clone().map(|b| busy_pill(b, self.progress.clone()))),
             )
             .into_any_element()
     }

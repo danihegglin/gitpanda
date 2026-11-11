@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::conflict::{ConflictFile, Pick};
 use super::diff::{DiffSource, file_diff};
-use super::ops::{Git, RebaseAction, rebase_range};
+use super::ops::{Git, Progress, RebaseAction, parse_progress, rebase_range};
 use super::repo::{self, OpState};
 
 pub(crate) struct TempRepo(pub(crate) PathBuf);
@@ -351,4 +351,53 @@ fn stage_untracked_file_with_newline_in_name() {
     let s = repo::status(&r.0).unwrap();
     assert_eq!(s.staged.len(), 1);
     assert_eq!(s.staged[0].path.as_ref(), "x\n+++ y.txt");
+}
+
+#[test]
+fn progress_lines_are_parsed_and_everything_else_is_not() {
+    let p = |phase: &str, percent| Some(Progress { phase: phase.into(), percent });
+    assert_eq!(parse_progress("remote: Counting objects:  45% (9/20)"), p("Counting objects", Some(45)));
+    assert_eq!(parse_progress("Receiving objects: 100% (20/20), 1.20 MiB | 3.00 MiB/s, done."), p("Receiving objects", Some(100)));
+    assert_eq!(parse_progress("remote: Enumerating objects: 5, done."), p("Enumerating objects", None));
+    assert_eq!(parse_progress("Fetching origin"), p("Fetching origin", None));
+    for line in ["", "error: cannot pull with rebase: You have unstaged changes.", "fatal: couldn't find remote ref main",
+        "From github.com:a/b", "Updating 1a2b3c4..5d6e7f8", "Fast-forward", " a.txt | 2 +-", "hint: see git help",
+        "There is no tracking information for the current branch.", "Fetching origin and more"] {
+        assert_eq!(parse_progress(line), None, "{line:?}");
+    }
+}
+
+#[test]
+fn pull_and_fetch_report_progress_and_keep_errors_clean() {
+    let src = TempRepo::new();
+    for i in 0..150 {
+        src.write(&format!("f{i}.txt"), &format!("{i}\n"));
+    }
+    src.git(&["add", "."]);
+    src.git(&["commit", "-q", "-m", "many"]);
+    let url = format!("file://{}", src.0.display());
+    let dst = TempRepo::new();
+    dst.git(&["remote", "add", "origin", &url]);
+    dst.git(&["fetch", "-q", "origin"]);
+    dst.git(&["checkout", "-q", "-B", "main", "--track", "origin/main"]);
+
+    for i in 0..150 {
+        src.write(&format!("f{i}.txt"), &format!("{i} again\n"));
+    }
+    src.git(&["commit", "-q", "-am", "more"]);
+
+    let seen = std::cell::RefCell::new(Vec::new());
+    let on = |p: Progress| seen.borrow_mut().push(p);
+    Git::new(&dst.0).fetch(&on).unwrap();
+    Git::new(&dst.0).pull(&on).unwrap();
+    assert_eq!(dst.log(), ["more", "many"]);
+    let seen = seen.borrow().clone();
+    assert!(seen.iter().any(|p| p.phase == "Receiving objects" && p.percent == Some(100)), "{:?}", seen.last());
+
+    // A failing pull reports git's message, not progress output.
+    dst.git(&["branch", "-q", "--unset-upstream"]);
+    dst.git(&["remote", "remove", "origin"]);
+    let err = Git::new(&dst.0).pull(&on).unwrap_err().to_string();
+    assert!(!err.contains('%') && !err.contains('\r'), "{err}");
+    assert!(!err.is_empty());
 }

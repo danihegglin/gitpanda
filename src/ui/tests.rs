@@ -667,3 +667,16 @@ fn graph_scrollbar_drags_and_jumps(cx: &mut TestAppContext) {
     assert_eq!(base.offset().y, gpui::px(0.));
     assert_eq!(view.read_with(cx, |v, _| v.graph_scrollbar.get()), None);
 }
+
+#[gpui::test]
+fn failed_pull_clears_the_progress_indicator(cx: &mut TestAppContext) {
+    let r = three_commits();
+    let (view, cx) = open(&r, cx);
+    view.update(cx, |v, cx| v.pull(cx));
+    assert_eq!(view.read_with(cx, |v, _| v.busy.as_ref().map(|b| b.to_string())), Some("Pulling…".to_string()));
+    cx.run_until_parked();
+    view.read_with(cx, |v, _| {
+        assert!(v.busy.is_none() && v.progress.is_none());
+        assert_eq!(v.toasts.last().unwrap().kind, ToastKind::Error);
+    });
+}

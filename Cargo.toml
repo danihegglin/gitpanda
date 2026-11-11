@@ -12,6 +12,8 @@ git2 = { version = "0.21", default-features = false }
 notify = "8.2"
 smallvec = "1.16"
 anyhow = "1"
+# Already in the tree through gpui; streams progress from git to the UI.
+futures = "0.3"
 
 [dev-dependencies]
 # Headless TestAppContext and #[gpui::test] for the UI tests.
