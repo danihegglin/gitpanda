@@ -2,7 +2,7 @@
 //! config, credentials and every edge case behave exactly like the user's
 //! own git; reads stay on libgit2 where speed matters.
 
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -24,6 +24,38 @@ fn ref_arg(name: &str) -> Result<&str> {
         bail!("refusing to use {name:?}: a ref name starting with \"-\" would be read as an option");
     }
     Ok(name)
+}
+
+/// How far a network operation (fetch, pull, push) has got, as git reports
+/// it on stderr: a phase such as "Receiving objects" and, while counting, how
+/// far through it is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Progress {
+    pub phase: String,
+    pub percent: Option<u8>,
+}
+
+/// Reads one of git's progress lines ("remote: Counting objects:  45% (9/20)",
+/// "Receiving objects: 100% (20/20), 1.2 MiB | 3 MiB/s, done.", "Fetching
+/// origin"). Anything else, such as errors and hints, is not progress.
+pub fn parse_progress(line: &str) -> Option<Progress> {
+    let line = line.trim();
+    let line = line.strip_prefix("remote:").map_or(line, str::trim_start);
+    if let Some(remote) = line.strip_prefix("Fetching ") {
+        if !remote.is_empty() && !remote.contains(char::is_whitespace) {
+            return Some(Progress { phase: line.to_string(), percent: None });
+        }
+        return None;
+    }
+    let (phase, rest) = line.split_once(':')?;
+    let rest = rest.trim_start();
+    // A phase is a few plain words ("Resolving deltas"); "error: …" has one
+    // word and is followed by text, not a count.
+    if !phase.contains(' ') || !phase.chars().all(|c| c.is_ascii_alphabetic() || c == ' ') || !rest.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    let percent = rest.split_once('%').and_then(|(n, _)| n.trim().parse::<u8>().ok()).map(|p| p.min(100));
+    Some(Progress { phase: phase.to_string(), percent })
 }
 
 fn quote(s: &str) -> String {
@@ -76,6 +108,55 @@ impl<'a> Git<'a> {
     pub fn run(&self, args: &[&str]) -> Result<String> {
         let out = self.command(args).output().context("could not run git")?;
         self.finish(args, out)
+    }
+
+    /// Like `run`, but streams git's progress to `on` while it works. Pass
+    /// `--progress` in `args`: git only reports it to a terminal otherwise.
+    pub fn run_progress(&self, args: &[&str], on: &dyn Fn(Progress)) -> Result<String> {
+        let mut child = self.command(args).spawn().context("could not run git")?;
+        let mut out = child.stdout.take().context("no stdout")?;
+        let stdout = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = out.read_to_end(&mut buf);
+            buf
+        });
+        // Progress lines are redrawn with \r; keep everything else for the
+        // error message.
+        let mut err = child.stderr.take().context("no stderr")?;
+        let mut stderr = Vec::new();
+        let mut line = Vec::new();
+        let mut flush = |line: &mut Vec<u8>| {
+            let text = String::from_utf8_lossy(line);
+            match parse_progress(&text) {
+                Some(p) => on(p),
+                None if !text.trim().is_empty() => {
+                    stderr.extend_from_slice(line);
+                    stderr.push(b'\n');
+                }
+                None => {}
+            }
+            line.clear();
+        };
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = match err.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e).context("could not read git's output"),
+            };
+            for &b in &buf[..n] {
+                if b == b'\r' || b == b'\n' {
+                    flush(&mut line);
+                } else {
+                    line.push(b);
+                }
+            }
+        }
+        flush(&mut line);
+        let status = child.wait().context("could not run git")?;
+        let stdout = stdout.join().unwrap_or_default();
+        self.finish(args, std::process::Output { status, stdout, stderr })
     }
 
     pub fn run_env(&self, args: &[&str], env: &[(&str, &str)]) -> Result<String> {
@@ -266,16 +347,16 @@ impl<'a> Git<'a> {
 
     // ---- remotes & stash -------------------------------------------------
 
-    pub fn fetch(&self) -> Result<()> {
-        self.run(&["fetch", "--all", "--prune"]).map(drop)
+    pub fn fetch(&self, on: &dyn Fn(Progress)) -> Result<()> {
+        self.run_progress(&["fetch", "--all", "--prune", "--progress"], on).map(drop)
     }
 
-    pub fn pull(&self) -> Result<()> {
-        self.run(&["pull", "--autostash"]).map(drop)
+    pub fn pull(&self, on: &dyn Fn(Progress)) -> Result<()> {
+        self.run_progress(&["pull", "--autostash", "--progress"], on).map(drop)
     }
 
-    pub fn push(&self, branch: &str, has_upstream: bool, force: bool) -> Result<()> {
-        let mut args = vec!["push"];
+    pub fn push(&self, branch: &str, has_upstream: bool, force: bool, on: &dyn Fn(Progress)) -> Result<()> {
+        let mut args = vec!["push", "--progress"];
         if force {
             args.push("--force-with-lease");
         }
@@ -283,9 +364,9 @@ impl<'a> Git<'a> {
             let remote = self.run(&["remote"])?;
             let remote = remote.lines().next().context("no remote configured")?.to_string();
             args.extend(["-u", ref_arg(&remote)?, ref_arg(branch)?]);
-            return self.run(&args).map(drop);
+            return self.run_progress(&args, on).map(drop);
         }
-        self.run(&args).map(drop)
+        self.run_progress(&args, on).map(drop)
     }
 
     pub fn stash(&self, message: &str) -> Result<()> {

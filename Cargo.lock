@@ -2063,6 +2063,7 @@ version = "0.1.8"
 dependencies = [
  "anyhow",
  "core-graphics 0.25.0",
+ "futures",
  "git2 0.21.0",
  "gpui",
  "image",

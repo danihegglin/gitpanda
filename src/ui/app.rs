@@ -18,7 +18,9 @@ use notify::{RecursiveMode, Watcher};
 
 use crate::git::conflict::{ConflictFile, Pick};
 use crate::git::diff::{DiffSource, FileDiff, FileStatus, file_diff};
-use crate::git::ops::{Git, RebaseAction, RebaseStep, rebase_range};
+use futures::StreamExt as _;
+
+use crate::git::ops::{Git, Progress, RebaseAction, RebaseStep, rebase_range};
 use crate::git::repo::{self, CommitDetail, Snapshot, Summary, wip_oid};
 use crate::workspace::Workspace;
 
@@ -228,6 +230,8 @@ pub struct GitPanda {
     pub toasts: Vec<Toast>,
     next_toast: u64,
     pub busy: Option<SharedString>,
+    /// The running network operation's latest progress, shown beside `busy`.
+    pub progress: Option<Progress>,
     pub collapsed: HashSet<&'static str>,
 
     pub graph_scroll: UniformListScrollHandle,
@@ -299,6 +303,7 @@ impl GitPanda {
             toasts: Vec::new(),
             next_toast: 0,
             busy: None,
+            progress: None,
             collapsed: HashSet::new(),
             graph_scroll: UniformListScrollHandle::new(),
             graph_scrollbar: Default::default(),
@@ -751,13 +756,46 @@ impl GitPanda {
         op: impl FnOnce(&Git) -> anyhow::Result<String> + Send + 'static,
         cx: &mut Context<Self>,
     ) {
+        self.run_with_progress(label, move |g, _| op(g), cx)
+    }
+
+    /// Like `run`, for operations that report progress (fetch, pull, push):
+    /// what `op` hands to its callback shows in the toolbar until it ends.
+    pub fn run_with_progress(
+        &mut self,
+        label: &str,
+        op: impl FnOnce(&Git, &dyn Fn(Progress)) -> anyhow::Result<String> + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
         let Some(dir) = self.workdir.clone() else { return };
         self.busy = Some(format!("{label}…").into());
+        self.progress = None;
         cx.notify();
+        let (tx, mut rx) = futures::channel::mpsc::unbounded::<Progress>();
+        // Ends when `op` returns and drops the sender.
         cx.spawn(async move |this, cx| {
-            let res = cx.background_executor().spawn(async move { op(&Git::new(&dir)) }).await;
+            while let Some(mut p) = rx.next().await {
+                // Only the newest update matters once several are queued.
+                while let Ok(next) = rx.try_recv() {
+                    p = next;
+                }
+                if this.update(cx, |this, cx| {
+                    this.progress = Some(p);
+                    cx.notify();
+                }).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+        cx.spawn(async move |this, cx| {
+            let res = cx
+                .background_executor()
+                .spawn(async move { op(&Git::new(&dir), &move |p| drop(tx.unbounded_send(p))) })
+                .await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = None;
+                this.progress = None;
                 match res {
                     Ok(msg) if !msg.is_empty() => this.toast(ToastKind::Success, msg, cx),
                     Ok(_) => {}
@@ -767,6 +805,14 @@ impl GitPanda {
             });
         })
         .detach();
+    }
+
+    pub fn fetch(&mut self, cx: &mut Context<Self>) {
+        self.run_with_progress("Fetching", |g, on| g.fetch(on).map(|_| "Fetched all remotes".into()), cx);
+    }
+
+    pub fn pull(&mut self, cx: &mut Context<Self>) {
+        self.run_with_progress("Pulling", |g, on| g.pull(on).map(|_| "Pulled".into()), cx);
     }
 
     pub fn toast(&mut self, kind: ToastKind, text: impl Into<SharedString>, cx: &mut Context<Self>) {
@@ -1041,8 +1087,8 @@ impl GitPanda {
         };
         let has_upstream = snap.branches.iter().any(|b| b.name == branch && b.upstream.is_some());
         let branch = branch.to_string();
-        self.run(if force { "Force pushing" } else { "Pushing" }, move |g| {
-            g.push(&branch, has_upstream, force).map(|_| format!("Pushed {branch}"))
+        self.run_with_progress(if force { "Force pushing" } else { "Pushing" }, move |g, on| {
+            g.push(&branch, has_upstream, force, on).map(|_| format!("Pushed {branch}"))
         }, cx);
     }
 

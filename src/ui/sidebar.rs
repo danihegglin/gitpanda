@@ -259,7 +259,7 @@ impl GitPanda {
                     action(|this, _, cx| this.push(true, cx)));
                 cx.notify();
             }));
-            add("Pull".into(), false, action(|this, _, cx| this.run("Pulling", |g| g.pull().map(|_| "Pulled".into()), cx)));
+            add("Pull".into(), false, action(|this, _, cx| this.pull(cx)));
         }
         if !items.is_empty() {
             items.push(MenuItem::Separator);
