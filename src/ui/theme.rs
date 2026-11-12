@@ -10,6 +10,10 @@ pub const BG_HOVER: u32 = 0x1f2335;
 pub const BG_SELECT: u32 = 0x283457;
 pub const BORDER: u32 = 0x101014;
 pub const BORDER_HI: u32 = 0x2a2f45;
+/// Side panes (left sidebar, right panel): clearly darker than the graph and
+/// diff area in the middle, with a visible edge against it.
+pub const PANE_BG: u32 = 0x0e0e13;
+pub const PANE_EDGE: u32 = BORDER_HI;
 pub const TERMINAL_BLACK: u32 = 0x414868;
 pub const FG: u32 = 0xc0caf5;
 pub const FG_DARK: u32 = 0xa9b1d6;
