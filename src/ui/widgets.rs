@@ -42,6 +42,23 @@ pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, tone: To
         .child(label.into())
 }
 
+/// A large square ✕ button for closing a full-pane view.
+pub fn close_button(id: impl Into<ElementId>) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(px(32.))
+        .rounded(px(6.))
+        .text_color(c(FG_DARK))
+        .text_size(px(16.))
+        .cursor_pointer()
+        .hover(|s| s.bg(c(BG_HIGHLIGHT)).text_color(c(FG)))
+        .child("✕")
+}
+
 /// A compact icon-ish button used on hover in lists.
 pub fn mini_button(id: impl Into<ElementId>, label: impl Into<SharedString>, color: u32) -> Stateful<Div> {
     div()

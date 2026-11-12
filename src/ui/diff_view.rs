@@ -49,11 +49,9 @@ impl GitPanda {
         let (p1, p2, p3) = (path.clone(), path.clone(), path.clone());
         let bar = top_bar()
             .child(
-                button("back", "← Graph", Tone::Ghost).on_click(cx.listener(|this, _, window, cx| {
-                    this.file_view = None;
-                    window.focus(&this.focus);
-                    cx.notify();
-                })),
+                button("back", "← Graph", Tone::Ghost)
+                    .debug_selector(|| "back-file".into())
+                    .on_click(cx.listener(|this, _, window, cx| this.close_file_view(window, cx))),
             )
             .child(status_badge(status.letter()))
             .child(
@@ -81,7 +79,12 @@ impl GitPanda {
                 d.child(button("unstage-file", "Unstage file", Tone::Normal).on_click(cx.listener(move |this, _, _, cx| {
                     this.unstage_path(p3.clone(), cx)
                 })))
-            });
+            })
+            .child(
+                close_button("close-file")
+                    .debug_selector(|| "close-file".into())
+                    .on_click(cx.listener(|this, _, window, cx| this.close_file_view(window, cx))),
+            );
 
         let body = if let Some(err) = &fv.error {
             div().flex().flex_1().items_center().justify_center().text_color(c(COMMENT)).child(err.clone()).into_any_element()
@@ -239,6 +242,20 @@ impl GitPanda {
         cx.notify();
     }
 
+    /// Back to the graph from the file view.
+    fn close_file_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.file_view = None;
+        window.focus(&self.focus);
+        cx.notify();
+    }
+
+    /// Back to the graph from the conflict resolver.
+    fn close_conflict_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.conflict = None;
+        window.focus(&self.focus);
+        cx.notify();
+    }
+
     // ---- conflicts -----------------------------------------------------------
 
     pub fn render_conflict(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -255,11 +272,10 @@ impl GitPanda {
         let n = cv.rows.len();
 
         let bar = top_bar()
-            .child(button("back", "← Graph", Tone::Ghost).on_click(cx.listener(|this, _, window, cx| {
-                this.conflict = None;
-                window.focus(&this.focus);
-                cx.notify();
-            })))
+            .child(
+                button("back", "← Graph", Tone::Ghost)
+                    .on_click(cx.listener(|this, _, window, cx| this.close_conflict_view(window, cx))),
+            )
             .child(status_badge("!"))
             .child(div().truncate().font_weight(gpui::FontWeight::SEMIBOLD).child(path.clone()))
             .child(pill(
@@ -287,6 +303,10 @@ impl GitPanda {
                             this.save_conflict(cx);
                         }
                     })),
+            )
+            .child(
+                close_button("close-conflict")
+                    .on_click(cx.listener(|this, _, window, cx| this.close_conflict_view(window, cx))),
             );
 
         let body = if n == 0 {
@@ -561,6 +581,19 @@ mod view_tests {
         cx.run_until_parked();
         assert_eq!(r.read("f.txt"), "a\nb\nc\nd\n");
         // Nothing left to show.
+        assert!(view.read_with(cx, |v, _| v.file_view.is_none()));
+    }
+
+    #[gpui::test]
+    fn the_close_button_goes_back_to_the_graph(cx: &mut TestAppContext) {
+        let (_r, view, cx) = diff_open(cx);
+        let b = cx.debug_bounds("close-file").expect("close button is drawn");
+        // In the same top bar as the back arrow, at the other end.
+        let back = cx.debug_bounds("back-file").unwrap();
+        assert_eq!(b.center().y, back.center().y);
+        assert!(b.left() > back.right() + gpui::px(200.), "close button at {b:?}, back at {back:?}");
+        cx.simulate_click(b.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
         assert!(view.read_with(cx, |v, _| v.file_view.is_none()));
     }
 
