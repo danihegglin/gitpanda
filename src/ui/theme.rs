@@ -34,10 +34,17 @@ pub const GREEN: u32 = 0x9ece6a;
 pub const GREEN1: u32 = 0x73daca;
 pub const RED: u32 = 0xf7768e;
 
-pub const DIFF_ADD: u32 = 0x20303b;
-pub const DIFF_ADD_HI: u32 = 0x2c4a3f;
-pub const DIFF_DEL: u32 = 0x37222c;
-pub const DIFF_DEL_HI: u32 = 0x57303a;
+/// Diff lines use a classic, unmistakable green/red rather than the muted
+/// Tokyo Night tones: saturated sign/count colours, clearly tinted line
+/// backgrounds, and lightly tinted text that stays readable on top of them.
+pub const DIFF_GREEN: u32 = 0x3fb950;
+pub const DIFF_RED: u32 = 0xf85149;
+pub const DIFF_ADD: u32 = 0x1a3d26;
+pub const DIFF_ADD_HI: u32 = 0x23592f;
+pub const DIFF_ADD_FG: u32 = 0xc6f6cb;
+pub const DIFF_DEL: u32 = 0x4a1e24;
+pub const DIFF_DEL_HI: u32 = 0x6b262e;
+pub const DIFF_DEL_FG: u32 = 0xffd7d3;
 pub const OURS_BG: u32 = 0x1e2a4a;
 pub const THEIRS_BG: u32 = 0x2e2346;
 pub const RESOLVED_BG: u32 = 0x1d2e2a;
