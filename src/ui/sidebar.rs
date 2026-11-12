@@ -7,6 +7,7 @@ use gpui::{
     px, uniform_list,
 };
 
+use super::split::Side;
 use super::app::{Menu, MenuItem, ToastKind, GitPanda, action};
 use super::theme::*;
 use super::widgets::*;
@@ -44,10 +45,11 @@ impl GitPanda {
         let rows = self.sidebar_rows();
         let count = rows.len();
         div()
+            .relative()
             .flex()
             .flex_col()
             .flex_none()
-            .w(px(WIDTH))
+            .w(px(self.pane_width(Side::Left)))
             .h_full()
             .bg(c(BG_DARK))
             .border_r_1()
@@ -63,6 +65,7 @@ impl GitPanda {
                 .flex_1()
                 .pt(px(6.)),
             )
+            .child(self.pane_handle(Side::Left, cx))
             .into_any_element()
     }
 

@@ -680,3 +680,43 @@ fn failed_pull_clears_the_progress_indicator(cx: &mut TestAppContext) {
         assert_eq!(v.toasts.last().unwrap().kind, ToastKind::Error);
     });
 }
+
+#[gpui::test]
+fn dragging_pane_edges_resizes_the_panes(cx: &mut TestAppContext) {
+    use super::split::{CENTER_MIN_W, MIN_W, Side};
+    let r = three_commits();
+    let (view, cx) = open(&r, cx);
+    let width = |side, cx: &mut gpui::VisualTestContext| view.read_with(cx, |v, _| v.pane_width(side));
+    let (left, right) = (width(Side::Left, cx), width(Side::Right, cx));
+    let none = gpui::Modifiers::none();
+    let drag = |edge: &'static str, dx: f32, cx: &mut gpui::VisualTestContext| {
+        let from = cx.debug_bounds(edge).unwrap().center();
+        let to = gpui::point(from.x + gpui::px(dx), from.y);
+        cx.simulate_mouse_down(from, gpui::MouseButton::Left, none);
+        cx.simulate_mouse_move(gpui::point(from.x + gpui::px(dx / 2.), from.y), gpui::MouseButton::Left, none);
+        cx.simulate_mouse_move(to, gpui::MouseButton::Left, none);
+        cx.simulate_mouse_up(to, gpui::MouseButton::Left, none);
+        cx.run_until_parked();
+    };
+
+    drag("sidebar-edge", 80., cx);
+    assert_eq!(width(Side::Left, cx), left + 80.);
+    drag("panel-edge", -60., cx);
+    assert_eq!(width(Side::Right, cx), right + 60.);
+    assert_eq!(view.read_with(cx, |v, _| (v.workspace.sidebar, v.workspace.panel)), (Some(left + 80.), Some(right + 60.)));
+
+    // Never narrower than the minimum, never squeezing out the graph.
+    drag("sidebar-edge", -1000., cx);
+    assert_eq!(width(Side::Left, cx), MIN_W);
+    drag("panel-edge", -5000., cx);
+    let total = f32::from(cx.debug_bounds("panes").unwrap().size.width);
+    assert!(width(Side::Right, cx) <= total - MIN_W - CENTER_MIN_W + 1., "{}", width(Side::Right, cx));
+
+    // Double-clicking an edge restores the default.
+    let edge = cx.debug_bounds("panel-edge").unwrap().center();
+    cx.simulate_event(gpui::MouseDownEvent { position: edge, button: gpui::MouseButton::Left, modifiers: none, click_count: 2, first_mouse: false });
+    cx.simulate_event(gpui::MouseUpEvent { position: edge, button: gpui::MouseButton::Left, modifiers: none, click_count: 2 });
+    cx.run_until_parked();
+    assert_eq!(width(Side::Right, cx), right);
+    assert_eq!(view.read_with(cx, |v, _| v.workspace.panel), None);
+}
