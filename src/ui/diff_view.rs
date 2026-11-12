@@ -64,8 +64,8 @@ impl GitPanda {
                     .child(div().truncate().font_weight(gpui::FontWeight::SEMIBOLD).child(path.clone())),
             )
             .child(side)
-            .child(div().text_size(px(11.)).font_family(MONO_FONT).text_color(c(GREEN)).child(format!("+{adds}")))
-            .child(div().text_size(px(11.)).font_family(MONO_FONT).text_color(c(RED)).child(format!("−{dels}")))
+            .child(div().text_size(px(11.)).font_family(MONO_FONT).text_color(c(DIFF_GREEN)).child(format!("+{adds}")))
+            .child(div().text_size(px(11.)).font_family(MONO_FONT).text_color(c(DIFF_RED)).child(format!("−{dels}")))
             .child(div().flex_1())
             .when(source == DiffSource::Unstaged, |d| {
                 d.child(button("discard-file", "Discard file", Tone::Danger).on_click(cx.listener(move |this, _, _, cx| {
@@ -165,8 +165,8 @@ impl GitPanda {
                 let line = &diff.hunks[h].lines[l];
                 let selected = fv.selected.contains(&(h, l));
                 let (bg, sign, sign_color) = match line.kind {
-                    LineKind::Add => (if selected { DIFF_ADD_HI } else { DIFF_ADD }, "+", GREEN),
-                    LineKind::Del => (if selected { DIFF_DEL_HI } else { DIFF_DEL }, "−", RED),
+                    LineKind::Add => (if selected { DIFF_ADD_HI } else { DIFF_ADD }, "+", DIFF_GREEN),
+                    LineKind::Del => (if selected { DIFF_DEL_HI } else { DIFF_DEL }, "−", DIFF_RED),
                     LineKind::Context => (BG, " ", COMMENT),
                     LineKind::NoNewline => (BG, " ", COMMENT),
                 };
@@ -204,7 +204,8 @@ impl GitPanda {
                             .text_color(match line.kind {
                                 LineKind::NoNewline => c(COMMENT),
                                 LineKind::Context => c(FG_DARK),
-                                _ => c(FG),
+                                LineKind::Add => c(DIFF_ADD_FG),
+                                LineKind::Del => c(DIFF_DEL_FG),
                             })
                             .child(expand_tabs(&line.text)),
                     )

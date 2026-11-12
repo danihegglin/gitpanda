@@ -775,8 +775,8 @@ impl GitPanda {
                                     .gap(px(6.))
                                     .text_size(px(11.))
                                     .font_family(MONO_FONT)
-                                    .when(f.additions > 0, |d| d.child(div().text_color(c(GREEN)).child(format!("+{}", f.additions))))
-                                    .when(f.deletions > 0, |d| d.child(div().text_color(c(RED)).child(format!("−{}", f.deletions)))),
+                                    .when(f.additions > 0, |d| d.child(div().text_color(c(DIFF_GREEN)).child(format!("+{}", f.additions))))
+                                    .when(f.deletions > 0, |d| d.child(div().text_color(c(DIFF_RED)).child(format!("−{}", f.deletions)))),
                             )
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 window.focus(&this.focus);
@@ -805,8 +805,8 @@ impl GitPanda {
                     .px(px(14.))
                     .child(section_label(format!("{n} FILE{} CHANGED", if n == 1 { "" } else { "S" })))
                     .child(div().flex_1())
-                    .child(div().text_size(px(11.)).font_family(MONO_FONT).text_color(c(GREEN)).child(format!("+{adds}")))
-                    .child(div().text_size(px(11.)).font_family(MONO_FONT).text_color(c(RED)).child(format!("−{dels}"))),
+                    .child(div().text_size(px(11.)).font_family(MONO_FONT).text_color(c(DIFF_GREEN)).child(format!("+{adds}")))
+                    .child(div().text_size(px(11.)).font_family(MONO_FONT).text_color(c(DIFF_RED)).child(format!("−{dels}"))),
             )
             .child(file_list)
             .into_any_element()
