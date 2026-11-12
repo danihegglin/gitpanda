@@ -575,6 +575,41 @@ impl GitPanda {
         items
     }
 
+    /// The selected commit's message as (title, body, whole message).
+    fn message_parts(&self) -> Option<(String, String, String)> {
+        let m = self.detail.as_ref()?.message.trim();
+        let (title, body) = m.split_once('\n').map_or((m, ""), |(t, b)| (t, b.trim()));
+        Some((title.trim().to_string(), body.to_string(), m.to_string()))
+    }
+
+    fn copy_text(&mut self, text: String, toast: &'static str, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        self.toast(ToastKind::Info, toast, cx);
+    }
+
+    /// Right-click menu on the commit title and body.
+    fn message_menu(&self) -> Vec<MenuItem> {
+        let Some((title, body, full)) = self.message_parts() else { return Vec::new() };
+        let mut items = vec![MenuItem::Action {
+            label: "Copy title".into(),
+            danger: false,
+            action: action(move |this, _, cx| this.copy_text(title.clone(), "Copied commit title", cx)),
+        }];
+        if !body.is_empty() {
+            items.push(MenuItem::Action {
+                label: "Copy body".into(),
+                danger: false,
+                action: action(move |this, _, cx| this.copy_text(body.clone(), "Copied commit body", cx)),
+            });
+        }
+        items.push(MenuItem::Action {
+            label: "Copy message".into(),
+            danger: false,
+            action: action(move |this, _, cx| this.copy_text(full.clone(), "Copied commit message", cx)),
+        });
+        items
+    }
+
     fn render_commit_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let Some(d) = self.detail.clone() else {
             return div()
@@ -590,6 +625,7 @@ impl GitPanda {
             Some((s, b)) => (s.to_string(), b.trim().to_string()),
             None => (d.message.to_string(), String::new()),
         };
+        let full = d.message.trim().to_string();
         let sha = d.oid.to_string();
         let adds: usize = d.files.iter().map(|f| f.additions).sum();
         let dels: usize = d.files.iter().map(|f| f.deletions).sum();
@@ -648,14 +684,41 @@ impl GitPanda {
                     )
                     .when(stash.is_some(), |d| d.child(pill("stash", MAGENTA, false)))
                     .child(div().flex_1())
+                    .child({
+                        let t = summary.clone();
+                        mini_button("copy-title", "Copy title", FG_DARK)
+                            .debug_selector(|| "copy-title".into())
+                            .on_click(cx.listener(move |this, _, _, cx| this.copy_text(t.clone(), "Copied commit title", cx)))
+                    })
+                    .child({
+                        let m = full.clone();
+                        mini_button("copy-message", "Copy message", FG_DARK)
+                            .debug_selector(|| "copy-message".into())
+                            .on_click(cx.listener(move |this, _, _, cx| this.copy_text(m.clone(), "Copied commit message", cx)))
+                    })
                     .children(stash.map(|index| {
                         button("pop", "Pop", Tone::Normal).on_click(cx.listener(move |this, _, _, cx| {
                             this.run("Popping", move |g| g.stash_pop(index).map(|_| "Popped stash".into()), cx)
                         }))
                     })),
             )
-            .child(div().text_size(px(15.)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(c(FG)).child(summary))
-            .when(!body.is_empty(), |el| el.child(div().text_size(px(12.5)).text_color(c(FG_DARK)).child(body)))
+            .child(
+                div()
+                    .id("commit-message")
+                    .flex()
+                    .flex_col()
+                    .gap(px(12.))
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                            let items = this.message_menu();
+                            this.menu = Some(Menu { pos: ev.position, items });
+                            cx.notify();
+                        }),
+                    )
+                    .child(div().text_size(px(15.)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(c(FG)).child(summary))
+                    .when(!body.is_empty(), |el| el.child(div().text_size(px(12.5)).text_color(c(FG_DARK)).child(body))),
+            )
             .child(
                 div()
                     .flex()
@@ -751,6 +814,45 @@ mod tests {
 
     use super::super::test_support::*;
     use super::*;
+
+    fn with_body() -> TempRepo {
+        let r = three_commits();
+        r.commit("four.txt", "four\n", "Add four\n\nWhy it matters.\nSecond line.");
+        r
+    }
+
+    fn clip(cx: &mut gpui::VisualTestContext) -> Option<String> {
+        cx.read_from_clipboard().and_then(|c| c.text())
+    }
+
+    #[gpui::test]
+    fn copy_buttons_copy_the_title_and_the_message(cx: &mut TestAppContext) {
+        let r = with_body();
+        let (view, cx) = open(&r, cx);
+        let at = cx.debug_bounds("copy-title").unwrap().center();
+        cx.simulate_click(at, gpui::Modifiers::default());
+        assert_eq!(clip(cx).as_deref(), Some("Add four"));
+        let at = cx.debug_bounds("copy-message").unwrap().center();
+        cx.simulate_click(at, gpui::Modifiers::default());
+        assert_eq!(clip(cx).as_deref(), Some("Add four\n\nWhy it matters.\nSecond line."));
+        assert_eq!(toasts(&view, cx), ["Copied commit title", "Copied commit message"]);
+    }
+
+    #[gpui::test]
+    fn message_menu_copies_each_part(cx: &mut TestAppContext) {
+        let r = with_body();
+        let (view, cx) = open(&r, cx);
+        let items = view.read_with(cx, |v, _| v.message_menu());
+        assert_eq!(labels(&items), ["Copy title", "Copy body", "Copy message"]);
+        click(&view, items, "Copy body", cx);
+        assert_eq!(clip(cx).as_deref(), Some("Why it matters.\nSecond line."));
+
+        // A commit without a body offers no "Copy body".
+        let two = oid_of(&view, "two", cx);
+        view.update(cx, |v, cx| v.select(two, cx));
+        cx.run_until_parked();
+        assert_eq!(view.read_with(cx, |v, _| labels(&v.message_menu())), ["Copy title", "Copy message"]);
+    }
 
     #[test]
     fn paths_split_into_name_and_folder() {
