@@ -9,6 +9,7 @@ use gpui::{
 use crate::git::diff::{DiffSource, FileStatus};
 use crate::git::repo::wip_oid;
 
+use super::split::Side;
 use super::app::{Menu, MenuItem, ToastKind, GitPanda, action};
 use super::theme::*;
 use super::widgets::*;
@@ -60,15 +61,17 @@ impl GitPanda {
             self.render_commit_panel(cx)
         };
         div()
+            .relative()
             .flex()
             .flex_col()
             .flex_none()
-            .w(px(WIDTH))
+            .w(px(self.pane_width(Side::Right)))
             .h_full()
-            .bg(c(BG_DARK))
+            .bg(c(PANE_BG))
             .border_l_1()
-            .border_color(c(BORDER))
+            .border_color(c(PANE_EDGE))
             .child(content)
+            .child(self.pane_handle(Side::Right, cx))
             .into_any_element()
     }
 
@@ -338,7 +341,7 @@ impl GitPanda {
                     .p(px(14.))
                     .border_t_1()
                     .border_color(c(BORDER))
-                    .bg(c(BG_DARK))
+                    .bg(c(PANE_BG))
                     .child(section_label("COMMIT MESSAGE"))
                     .child(self.commit_input.clone())
                     .child(

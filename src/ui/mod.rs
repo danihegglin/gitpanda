@@ -7,6 +7,7 @@ mod panel;
 mod projects;
 mod scrollbar;
 mod sidebar;
+mod split;
 pub mod text_input;
 pub mod theme;
 mod widgets;

@@ -239,6 +239,8 @@ pub struct GitPanda {
     /// The running network operation's latest progress, shown beside `busy`.
     pub progress: Option<Progress>,
     pub collapsed: HashSet<&'static str>,
+    /// Set while a side pane's edge is pressed (see `split.rs`).
+    pub(super) pane_grab: Option<super::split::PaneGrab>,
 
     pub graph_scroll: UniformListScrollHandle,
     pub graph_scrollbar: super::scrollbar::ScrollbarDrag,
@@ -311,6 +313,7 @@ impl GitPanda {
             busy: None,
             progress: None,
             collapsed: HashSet::new(),
+            pane_grab: None,
             graph_scroll: UniformListScrollHandle::new(),
             graph_scrollbar: Default::default(),
             diff_scroll: UniformListScrollHandle::new(),
@@ -1477,9 +1480,13 @@ impl Render for GitPanda {
                 .children(self.render_banner(cx))
                 .child(
                     div()
+                        .id("panes")
+                        .debug_selector(|| "panes".into())
                         .flex()
                         .flex_1()
                         .min_h_0()
+                        .on_drag_move(cx.listener(Self::on_pane_drag))
+                        .on_drop(cx.listener(Self::on_pane_drop))
                         .child(self.render_sidebar(cx))
                         .child(self.render_center(window, cx))
                         .child(self.render_panel(window, cx)),
