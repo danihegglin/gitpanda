@@ -65,9 +65,9 @@ impl GitPanda {
             .flex_none()
             .w(px(WIDTH))
             .h_full()
-            .bg(c(BG_DARK))
+            .bg(c(PANE_BG))
             .border_l_1()
-            .border_color(c(BORDER))
+            .border_color(c(PANE_EDGE))
             .child(content)
             .into_any_element()
     }
@@ -338,7 +338,7 @@ impl GitPanda {
                     .p(px(14.))
                     .border_t_1()
                     .border_color(c(BORDER))
-                    .bg(c(BG_DARK))
+                    .bg(c(PANE_BG))
                     .child(section_label("COMMIT MESSAGE"))
                     .child(self.commit_input.clone())
                     .child(

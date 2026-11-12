@@ -49,9 +49,9 @@ impl GitPanda {
             .flex_none()
             .w(px(WIDTH))
             .h_full()
-            .bg(c(BG_DARK))
+            .bg(c(PANE_BG))
             .border_r_1()
-            .border_color(c(BORDER))
+            .border_color(c(PANE_EDGE))
             .child(
                 uniform_list(
                     "sidebar",
