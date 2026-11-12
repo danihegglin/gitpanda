@@ -637,6 +637,13 @@ impl GitPanda {
         }
     }
 
+    /// Select HEAD's commit and scroll the graph to it.
+    pub fn reveal_head(&mut self, cx: &mut Context<Self>) {
+        if let Some(oid) = self.snap.as_ref().and_then(|s| s.head.oid) {
+            self.reveal(oid, cx);
+        }
+    }
+
     /// Selected commits (multi-selection), newest first, excluding WIP.
     pub fn selected_commits(&self) -> Vec<Oid> {
         let Some(s) = &self.snap else { return Vec::new() };

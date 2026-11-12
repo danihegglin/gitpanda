@@ -680,3 +680,19 @@ fn failed_pull_clears_the_progress_indicator(cx: &mut TestAppContext) {
         assert_eq!(v.toasts.last().unwrap().kind, ToastKind::Error);
     });
 }
+
+#[gpui::test]
+fn clicking_the_branch_jumps_to_its_head(cx: &mut TestAppContext) {
+    let r = three_commits();
+    let (view, cx) = open(&r, cx);
+    // Move away from HEAD first.
+    let one = oid_of(&view, "one", cx);
+    view.update(cx, |v, cx| v.select(one, cx));
+    cx.run_until_parked();
+    assert_eq!(selected_summary(&view, cx), "one");
+
+    let at = cx.debug_bounds("branch-head").expect("branch label drawn").center();
+    cx.simulate_click(at, gpui::Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(selected_summary(&view, cx), "three");
+}

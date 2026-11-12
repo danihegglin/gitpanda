@@ -109,7 +109,8 @@ impl GitPanda {
         let snap = self.snap.as_ref();
         let name = snap.map(|s| s.name.clone()).unwrap_or_else(|| "…".into());
         let branch = snap.and_then(|s| s.head.branch.clone());
-        let head_short = snap.and_then(|s| s.head.oid).map(|o| o.to_string()[..7].to_string());
+        let head_oid = snap.and_then(|s| s.head.oid);
+        let head_short = head_oid.map(|o| o.to_string()[..7].to_string());
         let upstream = snap.and_then(|s| s.branches.iter().find(|b| b.is_head)).map(|b| (b.ahead, b.behind, b.upstream.is_some()));
         // Pull and stash need a working tree.
         let bare = self.bare();
@@ -147,10 +148,20 @@ impl GitPanda {
                     )
                     .child(div().w(px(1.)).h(px(26.)).bg(c(BORDER_HI)).mx(px(4.)))
                     .child(
+                        // Clicking the branch jumps the graph to its latest commit.
                         div()
+                            .id("branch-head")
+                            .debug_selector(|| "branch-head".into())
                             .flex()
                             .flex_col()
                             .px(px(6.))
+                            .py(px(2.))
+                            .rounded(px(6.))
+                            .when(head_oid.is_some(), |d| {
+                                d.cursor_pointer()
+                                    .hover(|s| s.bg(c(BG_HIGHLIGHT)))
+                                    .on_click(cx.listener(|this, _, _, cx| this.reveal_head(cx)))
+                            })
                             .child(div().text_size(px(10.)).text_color(c(COMMENT)).child("BRANCH"))
                             .child(
                                 div()
