@@ -294,7 +294,8 @@ impl GitPanda {
         let branch = self.head_branch().unwrap_or_else(|| "detached HEAD".into());
         let staged = self.snap.as_ref().map_or(0, |s| s.status.staged.len());
         let amend = self.amend;
-        let input_focused = self.commit_input.read(cx).focus.is_focused(window);
+        let input_focused = self.commit_title.read(cx).focus.is_focused(window)
+            || self.commit_body.read(cx).focus.is_focused(window);
         let commit_label = match (amend, staged) {
             (true, _) => format!("Amend last commit on {branch}"),
             (false, 0) => "Stage changes to commit".to_string(),
@@ -343,7 +344,8 @@ impl GitPanda {
                     .border_color(c(BORDER))
                     .bg(c(PANE_BG))
                     .child(section_label("COMMIT MESSAGE"))
-                    .child(self.commit_input.clone())
+                    .child(self.commit_title.clone())
+                    .child(self.commit_body.clone())
                     .child(
                         div()
                             .flex()

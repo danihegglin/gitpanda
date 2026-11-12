@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use git2::Oid;
 use gpui::{
-    AppContext, ClipboardItem, Context, Entity, FocusHandle, KeyDownEvent, PathPromptOptions,
+    App, AppContext, ClipboardItem, Context, Entity, FocusHandle, KeyDownEvent, PathPromptOptions,
     Pixels, Point, ScrollStrategy, SharedString, Task, UniformListScrollHandle, Window, div,
     prelude::*, px,
 };
@@ -228,7 +228,9 @@ pub struct GitPanda {
     pub file_head: Option<String>,
     pub conflict: Option<ConflictView>,
 
-    pub commit_input: Entity<TextInput>,
+    /// The commit message's first line, and the lines after it.
+    pub commit_title: Entity<TextInput>,
+    pub commit_body: Entity<TextInput>,
     pub amend: bool,
 
     pub modal: Option<Modal>,
@@ -270,7 +272,8 @@ impl GitPanda {
 
     /// Like `new`, with the projects given rather than read from disk.
     pub fn with_workspace(path: Option<PathBuf>, workspace: Workspace, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let commit_input = cx.new(|cx| TextInput::new(cx, "Commit message (⌘⏎ to commit)", true));
+        let commit_title = cx.new(|cx| TextInput::new(cx, "Title", false));
+        let commit_body = cx.new(|cx| TextInput::new(cx, "Description (optional)", true));
         let fs_dirty = Arc::new(AtomicBool::new(false));
         // File system events only raise a flag; this loop coalesces them.
         let flag = fs_dirty.clone();
@@ -304,7 +307,8 @@ impl GitPanda {
             file_view: None,
             file_gen: 0,
             conflict: None,
-            commit_input,
+            commit_title,
+            commit_body,
             amend: false,
             modal: None,
             menu: None,
@@ -358,7 +362,7 @@ impl GitPanda {
                 }
                 self.close_repo(cx);
                 if let Some(draft) = self.drafts.remove(&dir) {
-                    self.commit_input.update(cx, |i, cx| i.set_text(draft, cx));
+                    self.set_commit_message(&draft, cx);
                 }
                 if let Some(i) = self.parked.iter().position(|p| p.snap.workdir == dir) {
                     let p = self.parked.remove(i);
@@ -392,11 +396,11 @@ impl GitPanda {
     /// Closes the open repository, keeping its unsent commit message.
     pub fn close_repo(&mut self, cx: &mut Context<Self>) {
         if let Some(old) = self.workdir.take() {
-            let draft = self.commit_input.read(cx).text().to_string();
-            if !draft.trim().is_empty() {
+            let draft = self.commit_message(cx);
+            if !draft.is_empty() {
                 self.drafts.insert(old.clone(), draft);
             }
-            self.commit_input.update(cx, |i, cx| i.set_text("", cx));
+            self.set_commit_message("", cx);
             if let Some(snap) = self.snap.take().filter(|s| s.workdir == old) {
                 self.parked.push(Parked {
                     snap,
@@ -866,14 +870,29 @@ impl GitPanda {
         self.snap.as_ref().is_some_and(|s| s.bare)
     }
 
+    /// The title and description joined into one message: the title,
+    /// then a blank line and the description when there is one.
+    pub fn commit_message(&self, cx: &App) -> String {
+        join_message(self.commit_title.read(cx).text(), self.commit_body.read(cx).text())
+    }
+
+    /// Fills the title with the message's first line and the description
+    /// with the rest.
+    pub fn set_commit_message(&mut self, msg: &str, cx: &mut Context<Self>) {
+        let (title, body) = split_message(msg);
+        self.commit_title.update(cx, |i, cx| i.set_text(title, cx));
+        self.commit_body.update(cx, |i, cx| i.set_text(body, cx));
+    }
+
     pub fn commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let msg = self.commit_input.read(cx).text().trim().to_string();
-        if msg.is_empty() {
-            self.toast(ToastKind::Info, "Write a commit message first", cx);
+        let msg = self.commit_message(cx);
+        let untitled = self.commit_title.read(cx).text().trim().is_empty();
+        if untitled {
+            self.toast(ToastKind::Info, if msg.is_empty() { "Write a commit message first" } else { "Write a commit title first" }, cx);
             // The message box is only on screen with the working tree
             // selected; focusing it elsewhere would swallow the keyboard.
             if self.selected == Some(wip_oid()) {
-                window.focus(&self.commit_input.read(cx).focus);
+                window.focus(&self.commit_title.read(cx).focus);
             }
             return;
         }
@@ -883,7 +902,7 @@ impl GitPanda {
             return;
         }
         let amend = self.amend;
-        self.commit_input.update(cx, |i, cx| i.set_text("", cx));
+        self.set_commit_message("", cx);
         self.amend = false;
         window.focus(&self.focus);
         self.run(if amend { "Amending" } else { "Committing" }, move |g| {
@@ -895,11 +914,9 @@ impl GitPanda {
 
     pub fn toggle_amend(&mut self, cx: &mut Context<Self>) {
         self.amend = !self.amend;
-        if self.amend && self.commit_input.read(cx).text().trim().is_empty() {
-            if let Some(dir) = &self.workdir {
-                if let Ok(m) = Git::new(dir).head_message() {
-                    self.commit_input.update(cx, |i, cx| i.set_text(m, cx));
-                }
+        if self.amend && self.commit_message(cx).is_empty() {
+            if let Some(m) = self.workdir.as_ref().and_then(|dir| Git::new(dir).head_message().ok()) {
+                self.set_commit_message(&m, cx);
             }
         }
         cx.notify();
@@ -1353,6 +1370,16 @@ impl GitPanda {
                 cx.notify();
             }
             "enter" if cmd && !self.bare() => self.commit(window, cx),
+            // Enter or Tab in the title moves on to the description, and
+            // Shift-Tab comes back.
+            "enter" | "tab" if !m.shift && self.commit_title.read(cx).focus.is_focused(window) => {
+                window.focus(&self.commit_body.read(cx).focus);
+                cx.notify();
+            }
+            "tab" if m.shift && self.commit_body.read(cx).focus.is_focused(window) => {
+                window.focus(&self.commit_title.read(cx).focus);
+                cx.notify();
+            }
             "r" if cmd => {
                 self.reload(cx);
                 self.toast(ToastKind::Info, "Refreshed", cx);
@@ -1584,8 +1611,8 @@ impl GitPanda {
             "branch" => self.new_branch_at("HEAD".into(), window, cx),
             "type" => {
                 let text = args.join(" ");
-                self.commit_input.update(cx, |i, cx| i.set_text(text, cx));
-                window.focus(&self.commit_input.read(cx).focus);
+                self.set_commit_message(&text, cx);
+                window.focus(&self.commit_title.read(cx).focus);
             }
             "toast" => self.toast(ToastKind::Success, args.join(" "), cx),
             "focus" => window.focus(&self.focus),
@@ -1603,6 +1630,25 @@ impl GitPanda {
         }
         cx.notify();
     }
+}
+
+/// Joins a commit title and description into one message.
+fn join_message(title: &str, body: &str) -> String {
+    let title = title.trim();
+    let body = body.trim_end().trim_start_matches(['\n', '\r']);
+    match (title.is_empty(), body.trim().is_empty()) {
+        (_, true) => title.to_string(),
+        (true, false) => body.to_string(),
+        (false, false) => format!("{title}\n\n{body}"),
+    }
+}
+
+/// Splits a commit message into its first line and the rest, dropping the
+/// blank lines between them.
+fn split_message(msg: &str) -> (String, String) {
+    let msg = msg.trim_start_matches(['\n', '\r']);
+    let (title, body) = msg.split_once('\n').unwrap_or((msg, ""));
+    (title.trim().to_string(), body.trim_start_matches(['\n', '\r']).trim_end().to_string())
 }
 
 #[cfg(test)]
@@ -1727,5 +1773,17 @@ theirs only
         assert_eq!(lines(Pick::Theirs), ["theirs 1"]);
         assert_eq!(lines(Pick::OursThenTheirs), ["ours 1", "ours 2", "theirs 1"]);
         assert_eq!(lines(Pick::TheirsThenOurs), ["theirs 1", "ours 1", "ours 2"]);
+    }
+
+    #[test]
+    fn commit_messages_split_into_title_and_description() {
+        assert_eq!(join_message("  Fix it ", ""), "Fix it");
+        assert_eq!(join_message("Fix it", "\n\nBecause.\nReally.\n\n"), "Fix it\n\nBecause.\nReally.");
+        assert_eq!(join_message("", "  "), "");
+        assert_eq!(split_message("Fix it\n\nBecause.\n  Really.\n"), ("Fix it".into(), "Because.\n  Really.".into()));
+        assert_eq!(split_message("Fix it\n"), ("Fix it".into(), String::new()));
+        assert_eq!(split_message(""), (String::new(), String::new()));
+        let (t, b) = split_message("Title\nno blank line");
+        assert_eq!(join_message(&t, &b), "Title\n\nno blank line");
     }
 }

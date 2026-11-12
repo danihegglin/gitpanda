@@ -153,7 +153,7 @@ fn commit_from_the_message_box(cx: &mut TestAppContext) {
     // Nothing to commit yet.
     cx.simulate_keystrokes("cmd-enter");
     assert_eq!(toasts(&view, cx), ["Write a commit message first"]);
-    view.update(cx, |v, cx| v.commit_input.update(cx, |i, cx| i.set_text("  four  ", cx)));
+    view.update(cx, |v, cx| v.set_commit_message("  four  ", cx));
     cx.simulate_keystrokes("cmd-enter");
     assert_eq!(toasts(&view, cx).last().unwrap(), "Nothing staged. Stage files first, or amend.");
 
@@ -164,9 +164,48 @@ fn commit_from_the_message_box(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(r.log(), ["four", "three", "two", "one"]);
     view.read_with(cx, |v, cx| {
-        assert_eq!(v.commit_input.read(cx).text(), "");
+        assert_eq!(v.commit_message(cx), "");
         assert!(v.busy.is_none());
         assert_eq!(v.toasts.last().unwrap().kind, ToastKind::Success);
+    });
+}
+
+#[gpui::test]
+fn commit_title_and_description_are_typed_separately(cx: &mut TestAppContext) {
+    let r = three_commits();
+    r.write("four.txt", "four\n");
+    r.git(&["add", "four.txt"]);
+    let (view, cx) = open(&r, cx);
+    view.update(cx, |v, cx| {
+        v.selected = Some(wip_oid());
+        cx.notify();
+    });
+    cx.run_until_parked();
+
+    // A description alone is not enough.
+    view.update_in(cx, |v, window, cx| window.focus(&v.commit_body.read(cx).focus));
+    cx.simulate_input("Why it matters.");
+    cx.simulate_keystrokes("cmd-enter");
+    assert_eq!(toasts(&view, cx), ["Write a commit title first"]);
+
+    // Enter in the title moves on to the description rather than committing.
+    view.update(cx, |v, cx| v.set_commit_message("", cx));
+    view.update_in(cx, |v, window, cx| window.focus(&v.commit_title.read(cx).focus));
+    cx.simulate_input("Add four");
+    cx.simulate_keystrokes("enter");
+    cx.simulate_input("Why it matters.");
+    cx.simulate_keystrokes("enter");
+    cx.simulate_input("Really.");
+    view.read_with(cx, |v, cx| {
+        assert_eq!(v.commit_title.read(cx).text(), "Add four");
+        assert_eq!(v.commit_body.read(cx).text(), "Why it matters.\nReally.");
+    });
+    cx.simulate_keystrokes("cmd-enter");
+    cx.run_until_parked();
+    assert_eq!(r.git(&["log", "-1", "--format=%B"]).trim_end(), "Add four\n\nWhy it matters.\nReally.");
+    view.read_with(cx, |v, cx| {
+        assert_eq!(v.commit_title.read(cx).text(), "");
+        assert_eq!(v.commit_body.read(cx).text(), "");
     });
 }
 
@@ -177,9 +216,9 @@ fn amend_prefills_the_last_message(cx: &mut TestAppContext) {
     view.update(cx, |v, cx| v.toggle_amend(cx));
     view.read_with(cx, |v, cx| {
         assert!(v.amend);
-        assert_eq!(v.commit_input.read(cx).text().trim(), "three");
+        assert_eq!(v.commit_message(cx), "three");
     });
-    view.update(cx, |v, cx| v.commit_input.update(cx, |i, cx| i.set_text("three, amended", cx)));
+    view.update(cx, |v, cx| v.set_commit_message("three, amended", cx));
     cx.simulate_keystrokes("cmd-enter");
     cx.run_until_parked();
     assert_eq!(r.log(), ["three, amended", "two", "one"]);
@@ -191,8 +230,8 @@ fn switching_repositories_keeps_unsent_messages(cx: &mut TestAppContext) {
     let (a, b) = (three_commits(), three_commits());
     let (view, cx) = open(&a, cx);
     let a_dir = view.read_with(cx, |v, _| v.workdir.clone().unwrap());
-    let text = |cx: &mut gpui::VisualTestContext| view.read_with(cx, |v, cx| v.commit_input.read(cx).text().to_string());
-    view.update(cx, |v, cx| v.commit_input.update(cx, |i, cx| i.set_text("half-written", cx)));
+    let text = |cx: &mut gpui::VisualTestContext| view.read_with(cx, |v, cx| v.commit_message(cx));
+    view.update(cx, |v, cx| v.set_commit_message("half-written\n\nmore to say", cx));
     view.update(cx, |v, cx| v.open_repo(&b.0, cx));
     cx.run_until_parked();
     assert_eq!(text(cx), "");
@@ -205,7 +244,7 @@ fn switching_repositories_keeps_unsent_messages(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("cmd-1");
     cx.run_until_parked();
     assert_eq!(view.read_with(cx, |v, _| v.workdir.clone()), Some(a_dir));
-    assert_eq!(text(cx), "half-written");
+    assert_eq!(text(cx), "half-written\n\nmore to say");
 }
 
 #[gpui::test]
