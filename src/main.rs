@@ -1,6 +1,8 @@
 // Release builds on Windows are GUI apps: no console window behind them.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+#[cfg(target_os = "linux")]
+mod desktop;
 mod debug;
 mod git;
 mod ui;
@@ -22,6 +24,8 @@ fn main() {
         return bench(args.first().cloned().unwrap_or_else(|| ".".into()));
     }
     let path = args.into_iter().next();
+    #[cfg(target_os = "linux")]
+    desktop::integrate_appimage();
     Application::new().run(move |cx: &mut App| {
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {
@@ -39,6 +43,10 @@ fn main() {
                     traffic_light_position: Some(point(px(16.), px(13.))),
                 }),
                 window_min_size: Some(size(px(960.), px(560.))),
+                // The Wayland app_id and X11 WM_CLASS: docks and taskbars match
+                // it to gitpanda.desktop for the app's name and icon, and fall
+                // back to the window title (the repository) without it.
+                app_id: Some("gitpanda".into()),
                 // gpui asks Wayland compositors for server-side decorations, and
                 // ones without them (GNOME) then show no window buttons at all.
                 // Draw our own there instead (see ui/frame.rs).
