@@ -13,6 +13,8 @@
 //! ```
 //!
 //! `active` names the open project; `*` marks a project's last open repository.
+//! Optional `sidebar = 250` and `panel = 390` lines, before the first
+//! project, keep the widths the side panes were dragged to.
 
 use std::path::{Path, PathBuf};
 
@@ -36,6 +38,9 @@ impl Project {
 pub struct Workspace {
     pub projects: Vec<Project>,
     pub active: usize,
+    /// Widths, in pixels, the left sidebar and right panel were dragged to.
+    pub sidebar: Option<f32>,
+    pub panel: Option<f32>,
     file: Option<PathBuf>,
 }
 
@@ -82,6 +87,13 @@ impl Workspace {
                 ws.projects.push(Project { name: name.trim().to_string(), ..Default::default() });
             } else if let Some(name) = line.strip_prefix("active").and_then(|l| l.trim_start().strip_prefix('=')) {
                 active = Some(name.trim().to_string());
+            } else if let Some((key, value)) = line.split_once('=').filter(|_| ws.projects.is_empty()) {
+                let width = value.trim().parse::<f32>().ok().filter(|w| w.is_finite() && *w > 0.);
+                match key.trim() {
+                    "sidebar" => ws.sidebar = width,
+                    "panel" => ws.panel = width,
+                    _ => {}
+                }
             } else if let Some(p) = ws.projects.last_mut() {
                 let (last, path) = match line.strip_prefix('*') {
                     Some(rest) => (true, PathBuf::from(rest.trim())),
@@ -103,6 +115,11 @@ impl Workspace {
         let mut out = String::new();
         if let Some(p) = self.project() {
             out.push_str(&format!("active = {}\n", p.name));
+        }
+        for (key, width) in [("sidebar", self.sidebar), ("panel", self.panel)] {
+            if let Some(w) = width {
+                out.push_str(&format!("{key} = {}\n", w.round()));
+            }
         }
         for p in &self.projects {
             out.push_str(&format!("[{}]\n", p.name));
@@ -219,6 +236,18 @@ mod tests {
         assert_eq!(ws.project().unwrap().start(), Some(&PathBuf::from("/y/three")));
         assert!(ws.projects[2].repos.is_empty());
         assert_eq!(ws.serialize(), text);
+    }
+
+    #[test]
+    fn pane_widths_round_trip() {
+        let text = "active = a\nsidebar = 300\npanel = 420\n[a]\n/x/one\n";
+        let ws = Workspace::parse(text);
+        assert_eq!((ws.sidebar, ws.panel), (Some(300.), Some(420.)));
+        assert_eq!(ws.serialize(), text);
+        // Only before the first project; junk widths are ignored.
+        let ws = Workspace::parse("sidebar = wide\npanel = -5\n[a]\nsidebar = 300\n");
+        assert_eq!((ws.sidebar, ws.panel), (None, None));
+        assert_eq!(ws.projects[0].repos, [PathBuf::from("sidebar = 300")]);
     }
 
     #[test]
